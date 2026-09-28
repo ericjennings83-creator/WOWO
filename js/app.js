@@ -855,7 +855,8 @@ function reviewRows(item) {
   switch (item.kind) {
     case 'trip': return row('Date', prettyDate(r.date)) + row('Miles', num(r.miles) + ' mi') + row('Vehicle', r.vehicle) + row('Reason', r.purpose) + row('Notes', r.notes);
     case 'expense': return row('Date', prettyDate(r.date)) + row('Paid to', r.vendor) + row('For', r.notes) + row('Amount', money(r.amount)) + row('Category', r.category)
-      + row('Paid with', r.paidPersonally ? 'Your own money (goes in the Journal too)' : r.paymentMethod);
+      + row('Paid with', r.paidPersonally ? 'Your own money (goes in the Journal too)' : r.paymentMethod)
+      + (r.paidPersonally ? row('Journal account', `Dr ${r.journalAccount || S.accountForExpenseCategory(r.category)} / Cr ${S.EQUITY_ACCOUNT}`) : '');
     case 'job': return row('Date', prettyDate(r.date)) + row('Client', item.customerName || '—') + row('Amount', money(r.amount)) + row('Payment', r.paymentMethod) + row('Notes', r.notes);
     case 'payout': return row('Date', prettyDate(r.date)) + row('Paid to', S.workerName(r.workerId) || '?') + row('Amount', money(r.amount)) + row('Paid by', r.method) + row('Notes', r.notes);
     case 'contribution': return row('Date', prettyDate(r.date)) + row('Description', r.description) + row('Amount', money(r.amount))
@@ -1048,6 +1049,10 @@ function expenseForm(e = {}, opts = {}) {
   const isNew = !e.id;
   const exp = { date: isoDate(), category: d.settings.expenseCategories[0], paymentMethod: 'Card', ...e };
   const cats = d.settings.expenseCategories.includes(exp.category) || !exp.category ? d.settings.expenseCategories : [...d.settings.expenseCategories, exp.category];
+  // The Journal account follows the category until the user picks one.
+  let accountPicked = !!exp.journalAccount;
+  const journalAccount = exp.journalAccount || S.accountForExpenseCategory(exp.category);
+  const accounts = S.CONTRIBUTION_ACCOUNTS.includes(journalAccount) ? S.CONTRIBUTION_ACCOUNTS : [...S.CONTRIBUTION_ACCOUNTS, journalAccount];
   openSheet({
     title: isNew ? 'New expense' : 'Edit expense',
     body: `
@@ -1058,20 +1063,33 @@ function expenseForm(e = {}, opts = {}) {
       ${field('Payment method', `<select name="paymentMethod">${options(['Card', 'Cash', 'Business account', 'Personal card', 'Personal cash', 'Other'], exp.paymentMethod)}</select>`)}
       ${toggle('paidPersonally', exp.paidPersonally, 'Paid with personal money',
         'Also records this as an owner contribution in the Journal.')}
+      <div data-journal-account ${exp.paidPersonally ? '' : 'hidden'}>
+        ${field('Journal account (debit)', `<select name="journalAccount">${options(accounts, journalAccount)}</select>`,
+          `Where this shows in the Journal: Dr this account, Cr ${esc(S.EQUITY_ACCOUNT)}.`)}
+      </div>
       ${field('Notes', `<textarea name="notes" rows="3">${esc(exp.notes)}</textarea>`)}
     `,
     onSave: v => {
       const saved = S.upsert('expenses', {
         ...e, date: v.date, amount: parseFloat(v.amount) || 0, vendor: v.vendor.trim(), category: v.category,
         paymentMethod: v.paymentMethod, paidPersonally: v.paidPersonally, notes: v.notes.trim(),
+        journalAccount: v.paidPersonally ? v.journalAccount : (e.journalAccount || ''),
       });
       if (opts.onSaved) opts.onSaved(saved);
     },
     onDelete: isNew ? null : () => S.remove('expenses', e.id),
     deleteLabel: 'Delete expense',
     onMount: f => {
+      const wrap = f.querySelector('[data-journal-account]');
+      const showAccount = () => { wrap.hidden = !f.elements.paidPersonally.checked; };
       f.elements.paymentMethod.addEventListener('change', () => {
         if (/^Personal/.test(f.elements.paymentMethod.value)) f.elements.paidPersonally.checked = true;
+        showAccount();
+      });
+      f.elements.paidPersonally.addEventListener('change', showAccount);
+      f.elements.journalAccount.addEventListener('change', () => { accountPicked = true; });
+      f.elements.category.addEventListener('change', () => {
+        if (!accountPicked) f.elements.journalAccount.value = S.accountForExpenseCategory(f.elements.category.value);
       });
     },
   });

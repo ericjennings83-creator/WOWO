@@ -416,7 +416,7 @@ export function allContributions() {
       date: e.date,
       description: [e.vendor, e.category].filter(Boolean).join(' – ') || 'Expense paid personally',
       amount: Number(e.amount) || 0,
-      debitAccount: accountForExpenseCategory(e.category),
+      debitAccount: e.journalAccount || accountForExpenseCategory(e.category),
       notes: e.notes || '',
       source: 'expense',
     }));
