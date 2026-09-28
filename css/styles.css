@@ -384,3 +384,61 @@ html.in-claude #view { padding-top: 8px; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition: none !important; animation: none !important; }
 }
+
+/* ---------- review your notes ---------- */
+.review-callout {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  text-decoration: none; color: var(--text); background: var(--accent-soft); border-color: transparent;
+}
+.review-callout span:first-child { display: flex; flex-direction: column; gap: 2px; }
+.review-callout small { color: var(--text-2); }
+.review-progress p { margin: 6px 0 12px; font-size: 14px; color: var(--text-2); }
+.review-progress b { color: var(--text); }
+.review-bar { height: 8px; border-radius: 4px; background: var(--track); overflow: hidden; }
+.review-bar span { display: block; height: 100%; background: var(--series); border-radius: 4px; }
+.review-filters { margin-bottom: 12px; }
+.chip-btn {
+  border: 1px solid var(--line); background: var(--surface); color: var(--text); border-radius: 999px;
+  padding: 6px 12px; font-size: 14px; font-weight: 600; cursor: pointer;
+}
+.chip-btn.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.chip-btn.on small { color: rgba(255,255,255,.85); }
+.review-grid { display: grid; gap: 12px; align-items: start; }
+.review-card, .review-photo-card { margin: 0; }
+.review-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; font-size: 13px; }
+.badge.kind-trip { background: var(--accent-soft); color: var(--accent-ink); }
+.badge.kind-expense { background: var(--surface-2); color: var(--text); }
+.badge.kind-payout, .badge.kind-job, .badge.kind-contribution { background: var(--surface-2); color: var(--text); }
+.flag-note { background: var(--warn-bg); color: var(--warn-ink); border-radius: 10px; padding: 10px 12px; margin-bottom: 10px; font-size: 14px; line-height: 1.45; }
+.review-info { border: 0; padding: 0; margin: 0 0 14px; }
+.review-info b { font-size: 16px; }
+.review-actions { display: grid; grid-template-columns: 1fr; gap: 8px; }
+.review-actions kbd, .review-done kbd {
+  font: 11px ui-monospace, Menlo, monospace; padding: 1px 5px; border-radius: 4px;
+  border: 1px solid currentColor; opacity: .6; margin-left: 4px;
+}
+.review-done { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; border-radius: 10px; background: var(--surface-2); }
+.review-done.approved b { color: var(--good); }
+.review-nav { display: flex; justify-content: space-between; gap: 8px; margin-top: 12px; }
+.review-nav .btn { flex: 1; }
+.review-photo-card h3 small { font-weight: 400; }
+.review-photo { overflow: auto; max-height: 70vh; border-radius: 8px; background: var(--surface-2); }
+.review-photo img { display: block; width: 100%; cursor: zoom-in; }
+.review-photo.zoomed img { width: 220%; max-width: none; cursor: zoom-out; }
+.review-all { margin-top: 12px; }
+.review-all summary { cursor: pointer; font-weight: 600; }
+.review-index { list-style: none; margin: 8px 0 0; padding: 0; max-height: 420px; overflow-y: auto; }
+.review-index li + li { border-top: 1px solid var(--line); }
+.review-index .row { padding: 8px 4px; }
+.review-index .row.current { background: var(--accent-soft); }
+.dot { width: 10px; height: 10px; border-radius: 50%; flex: none; background: var(--line); }
+.dot.approved { background: var(--good); }
+.dot.skipped { background: var(--muted); }
+
+@media (min-width: 900px) {
+  #view:has(.review-grid) { max-width: 1180px; }
+  .review-grid { grid-template-columns: minmax(360px, 440px) 1fr; }
+  .review-photo-card { position: sticky; top: 12px; }
+  .review-photo { max-height: calc(100vh - 140px); }
+  .review-actions { grid-template-columns: 1fr 1fr 1fr; }
+}

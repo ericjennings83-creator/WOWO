@@ -76,6 +76,7 @@ function emptyData() {
     contributions: [],
     workers: [],
     payouts: [],
+    review: [],
     settings: {
       businessName: 'My Detailing',
       mileageRate: 0.70,
@@ -89,7 +90,7 @@ function emptyData() {
 function normalize(d) {
   const base = emptyData();
   const out = { ...base, ...d, settings: { ...base.settings, ...(d && d.settings) } };
-  for (const k of ['customers', 'jobs', 'expenses', 'mileage', 'contributions', 'workers', 'payouts']) {
+  for (const k of ['customers', 'jobs', 'expenses', 'mileage', 'contributions', 'workers', 'payouts', 'review']) {
     if (!Array.isArray(out[k])) out[k] = [];
   }
   for (const c of out.customers) if (!Array.isArray(c.vehicles)) c.vehicles = [];
@@ -162,6 +163,8 @@ function toDocs(d) {
   };
   for (const c of DATED) for (const it of d[c]) put(`${c}__${(it.date || 'nodate').slice(0, 7)}`, it);
   for (const c of UNDATED) for (const it of d[c]) put(`${c}__b${bucketHash(it.id)}`, it);
+  // Entries waiting for review stay in one document until they're all handled.
+  for (const it of d.review) put('review__main', it);
   return docs;
 }
 
@@ -290,6 +293,40 @@ export function deleteCustomer(id) {
   for (const j of data.jobs) if (j.customerId === id) { j.customerId = ''; j.vehicleId = ''; }
   for (const m of data.mileage) if (m.customerId === id) m.customerId = '';
   save();
+}
+
+// ---------- review queue ----------
+// Entries transcribed from the owner's notes wait here until approved,
+// edited or skipped. Approving creates a real record and remembers its id
+// so the approval can be undone.
+
+export const REVIEW_TARGET = { trip: 'mileage', expense: 'expenses', job: 'jobs', payout: 'payouts', contribution: 'contributions' };
+
+export function reviewItems() {
+  return [...data.review].sort((a, b) => (a.seq || 0) - (b.seq || 0));
+}
+
+export function setReviewStatus(id, status, recordId = '') {
+  const it = data.review.find(r => r.id === id);
+  if (!it) return;
+  it.status = status;
+  it.recordId = recordId;
+  save();
+}
+
+export function clearFinishedReview() {
+  data.review = data.review.filter(r => r.status === 'pending');
+  save();
+}
+
+export function findOrCreateCustomer(name) {
+  const clean = (name || '').trim();
+  if (!clean) return '';
+  const found = data.customers.find(c => c.name.trim().toLowerCase() === clean.toLowerCase());
+  if (found) return found.id;
+  const c = { id: uid(), name: clean, phone: '', email: '', address: '', notes: 'Added from notebook review', vehicles: [], createdAt: new Date().toISOString().slice(0, 10) };
+  data.customers.push(c);
+  return c.id;
 }
 
 // A worker with jobs or payments keeps their history; only unused ones can be deleted.
@@ -477,9 +514,9 @@ export function csvFor(kind) {
       ]);
     case 'mileage':
       return toCSV([
-        ['Date', 'Miles', 'Start odometer', 'End odometer', 'Purpose', 'Customer', 'Notes'],
+        ['Date', 'Vehicle', 'Miles', 'Start odometer', 'End odometer', 'Purpose', 'Customer', 'Notes'],
         ...[...d.mileage].sort(byDateDesc).map(m => [
-          m.date, m.miles, m.odoStart, m.odoEnd, m.purpose, customerName(m.customerId), m.notes,
+          m.date, m.vehicle, m.miles, m.odoStart, m.odoEnd, m.purpose, customerName(m.customerId), m.notes,
         ]),
       ]);
     case 'contributions':

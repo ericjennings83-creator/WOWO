@@ -1,5 +1,5 @@
 import * as S from './store.js';
-import { esc, money, num, isoDate, shortDate, monthKey, monthLabel, periodRange } from './util.js';
+import { esc, money, num, isoDate, shortDate, prettyDate, monthKey, monthLabel, periodRange } from './util.js';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const view = $('#view');
@@ -22,7 +22,7 @@ if (IN_CLAUDE) document.documentElement.classList.add('in-claude');
 
 // Navigation state lives in the page. On claude.ai the frame can't carry a
 // #/path hash, so the hash is only mirrored for the stand-alone web app.
-let current = /^#\/(home|customers|customer|jobs|crew|worker|expenses|journal|settings)\b/.test(location.hash) ? location.hash : '#/home';
+let current = /^#\/(home|customers|customer|jobs|crew|worker|expenses|journal|settings|review)\b/.test(location.hash) ? location.hash : '#/home';
 
 function go(path) {
   current = path;
@@ -33,7 +33,7 @@ function go(path) {
 
 function route() {
   const [name, id] = (current.replace(/^#\/?/, '') || 'home').split('/');
-  const tab = { customer: 'customers', worker: 'crew', settings: 'home' }[name] || name;
+  const tab = { customer: 'customers', worker: 'crew', settings: 'home', review: 'home' }[name] || name;
   document.querySelectorAll('.tabbar a').forEach(a => a.classList.toggle('active', a.dataset.tab === tab));
   const renderers = {
     home: renderHome,
@@ -45,6 +45,7 @@ function route() {
     expenses: renderExpenses,
     journal: renderJournal,
     settings: renderSettings,
+    review: renderReview,
   };
   (renderers[name] || renderHome)();
 }
@@ -255,6 +256,7 @@ function renderHome() {
       <button class="btn" data-action="new-trip">＋ Miles</button>
     </div>
 
+    ${reviewCallout()}
     <div class="segmented" role="tablist">
       ${periods.map(([k, l]) => `<button data-action="period" data-period="${k}" class="${ui.period === k ? 'on' : ''}">${l}</button>`).join('')}
     </div>
@@ -313,6 +315,14 @@ function renderHome() {
       <p class="fine">A rough estimate only. If you take the standard mileage rate you generally can't also deduct actual fuel or repair costs for the same vehicle. Check with your tax preparer.</p>
     </section>
   `;
+}
+
+function reviewCallout() {
+  const pending = S.reviewItems().filter(r => r.status === 'pending').length;
+  if (!pending) return '';
+  return `<a class="card review-callout" href="#/review">
+    <span><b>Review your notes</b><small>${pending} ${pending === 1 ? 'entry' : 'entries'} from your notebook waiting to be checked and added</small></span>
+    <span class="chev">›</span></a>`;
 }
 
 function tile(label, value, sub, tone = '') {
@@ -554,7 +564,7 @@ function jobResults() {
     <ul class="list">${g.list.map(jobRow).join('')}</ul>`).join('');
 }
 
-function jobForm(j = {}, presetCustomer = '') {
+function jobForm(j = {}, presetCustomer = '', opts = {}) {
   const d = S.get();
   const isNew = !j.id;
   const job = { date: isoDate(), services: [], crew: [], paid: true, paymentMethod: 'Cash', customerId: presetCustomer, ...j };
@@ -602,11 +612,12 @@ function jobForm(j = {}, presetCustomer = '') {
       if (v.otherService.trim()) services.push(v.otherService.trim());
       const crew = [...f.querySelectorAll('input[name=crewMember]:checked')]
         .map(i => ({ workerId: i.value, pct: parseFloat(v['pct-' + i.value]) || 0 }));
-      S.upsert('jobs', {
+      const saved = S.upsert('jobs', {
         ...j, date: v.date, customerId: v.customerId, vehicleId: v.vehicleId, services, crew,
         amount: parseFloat(v.amount) || 0, tip: parseFloat(v.tip) || 0,
         paid: v.paid, paymentMethod: v.paymentMethod, notes: v.notes.trim(),
       });
+      if (opts.onSaved) opts.onSaved(saved);
     },
     onDelete: isNew ? null : () => S.remove('jobs', j.id),
     deleteLabel: 'Delete job',
@@ -780,7 +791,7 @@ function workerForm(w = {}) {
   });
 }
 
-function payoutForm(p = {}, preset = {}) {
+function payoutForm(p = {}, preset = {}, opts = {}) {
   const d = S.get();
   const isNew = !p.id;
   const pay = { date: isoDate(), method: 'Cash', workerId: preset.worker || '', amount: preset.amount || '', ...p };
@@ -795,9 +806,12 @@ function payoutForm(p = {}, preset = {}) {
       ${field('Paid by', `<select name="method">${options(S.PAYMENT_METHODS, pay.method)}</select>`)}
       ${field('Notes', `<input name="notes" value="${esc(pay.notes)}" placeholder="Week of…, check #…">`)}
     `,
-    onSave: v => S.upsert('payouts', {
-      ...p, workerId: v.workerId, date: v.date, amount: parseFloat(v.amount) || 0, method: v.method, notes: v.notes.trim(),
-    }),
+    onSave: v => {
+      const saved = S.upsert('payouts', {
+        ...p, workerId: v.workerId, date: v.date, amount: parseFloat(v.amount) || 0, method: v.method, notes: v.notes.trim(),
+      });
+      if (opts.onSaved) opts.onSaved(saved);
+    },
     onDelete: isNew ? null : () => S.remove('payouts', p.id),
     deleteLabel: 'Delete payment',
   });
@@ -810,6 +824,184 @@ function payoutForm(p = {}, preset = {}) {
   form.elements.workerId.addEventListener('change', () => { form.elements.amount.value = ''; preset.amount = ''; showOwed(); });
   showOwed();
 }
+
+// ---------------------------------------------------------------- REVIEW (entries transcribed from notes)
+
+const REVIEW_KINDS = [
+  ['all', 'All'], ['flagged', 'Needs a look'], ['trip', 'Mileage'], ['expense', 'Expenses'],
+  ['payout', 'Crew pay'], ['job', 'Income'], ['contribution', 'Owner money'],
+];
+const KIND_LABEL = { trip: 'Mileage', expense: 'Expense', payout: 'Crew payment', job: 'Income', contribution: 'Owner contribution' };
+
+function reviewList() {
+  const f = ui.reviewFilter || 'all';
+  return S.reviewItems().filter(r => f === 'all' || (f === 'flagged' ? !!r.flag : r.kind === f));
+}
+
+function currentReview(list) {
+  return list.find(r => r.id === ui.reviewId) || list.find(r => r.status === 'pending') || list[0];
+}
+
+function nextPendingAfter(list, item) {
+  const i = list.indexOf(item);
+  const after = [...list.slice(i + 1), ...list.slice(0, i)];
+  const next = after.find(r => r.status === 'pending');
+  return next ? next.id : item.id;
+}
+
+function reviewRows(item) {
+  const r = item.record;
+  const row = (k, v) => v === '' || v == null ? '' : `<div><span>${esc(k)}</span><b>${esc(v)}</b></div>`;
+  switch (item.kind) {
+    case 'trip': return row('Date', prettyDate(r.date)) + row('Miles', num(r.miles) + ' mi') + row('Vehicle', r.vehicle) + row('Reason', r.purpose) + row('Notes', r.notes);
+    case 'expense': return row('Date', prettyDate(r.date)) + row('Paid to', r.vendor) + row('For', r.notes) + row('Amount', money(r.amount)) + row('Category', r.category)
+      + row('Paid with', r.paidPersonally ? 'Your own money (goes in the Journal too)' : r.paymentMethod);
+    case 'job': return row('Date', prettyDate(r.date)) + row('Client', item.customerName || '—') + row('Amount', money(r.amount)) + row('Payment', r.paymentMethod) + row('Notes', r.notes);
+    case 'payout': return row('Date', prettyDate(r.date)) + row('Paid to', S.workerName(r.workerId) || '?') + row('Amount', money(r.amount)) + row('Paid by', r.method) + row('Notes', r.notes);
+    case 'contribution': return row('Date', prettyDate(r.date)) + row('Description', r.description) + row('Amount', money(r.amount))
+      + row('Journal entry', `Dr ${r.debitAccount} / Cr ${S.EQUITY_ACCOUNT}`) + row('Notes', r.notes);
+    default: return '';
+  }
+}
+
+function renderReview() {
+  const all = S.reviewItems();
+  const list = reviewList();
+  const item = currentReview(list);
+  const count = st => all.filter(r => r.status === st).length;
+  const done = count('approved') + count('skipped');
+  const pos = item ? list.indexOf(item) + 1 : 0;
+  const pendingHere = list.filter(r => r.status === 'pending' && !r.flag).length;
+
+  view.innerHTML = `
+    <header class="topbar"><a class="back" href="#/home">‹ Home</a><div class="topbar-actions"></div></header>
+    <h1 class="page-title">Review your notes</h1>
+    ${!all.length ? empty('Nothing to review.', '', '') : `
+    <div class="review-progress">
+      <div class="review-bar"><span style="width:${all.length ? (done / all.length) * 100 : 0}%"></span></div>
+      <p><b>${done} of ${all.length}</b> reviewed · ${count('approved')} added · ${count('skipped')} skipped · ${count('pending')} left</p>
+    </div>
+    <div class="chips review-filters">
+      ${REVIEW_KINDS.map(([k, l]) => {
+        const n = k === 'all' ? all.length : all.filter(r => k === 'flagged' ? r.flag : r.kind === k).length;
+        return n ? `<button class="chip-btn ${(ui.reviewFilter || 'all') === k ? 'on' : ''}" data-action="review-filter" data-filter="${k}">${l} <small>${n}</small></button>` : '';
+      }).join('')}
+    </div>
+    ${item ? `
+    <div class="review-grid">
+      <section class="card review-card" aria-live="polite">
+        <div class="review-head">
+          <span class="badge kind-${item.kind}">${esc(KIND_LABEL[item.kind] || item.kind)}</span>
+          <span class="muted">${pos} of ${list.length} · ${esc(item.source)}</span>
+        </div>
+        ${item.flag ? `<div class="flag-note"><b>Check this:</b> ${esc(item.flag)}</div>` : ''}
+        <div class="info review-info">${reviewRows(item)}</div>
+        ${item.status === 'pending' ? `
+          <div class="review-actions">
+            <button class="btn primary" data-action="review-add">Add <kbd>A</kbd></button>
+            <button class="btn" data-action="review-edit">Edit first <kbd>E</kbd></button>
+            <button class="btn" data-action="review-skip">Skip <kbd>S</kbd></button>
+          </div>` : `
+          <div class="review-done ${item.status}">
+            <b>${item.status === 'approved' ? '✓ Added to your books' : 'Skipped — not added'}</b>
+            <button class="btn" data-action="review-undo">Undo <kbd>U</kbd></button>
+          </div>`}
+        <div class="review-nav">
+          <button class="btn" data-action="review-prev" ${list.length < 2 ? 'disabled' : ''}>‹ Previous</button>
+          <button class="btn" data-action="review-next" ${list.length < 2 ? 'disabled' : ''}>Next ›</button>
+        </div>
+        <p class="fine">Keys: A add · E edit · S skip · U undo · ← → move</p>
+        ${pendingHere > 1 ? `<button class="link" data-action="review-add-rest">Add all ${pendingHere} remaining entries in this view that don't need a look</button>` : ''}
+      </section>
+      <section class="card review-photo-card">
+        <h3>${esc(item.source)} <small>click to zoom</small></h3>
+        <div class="review-photo"><img src="notes/${esc(item.page)}.jpg" alt="Photo of your notebook page: ${esc(item.source)}" data-action="review-zoom"></div>
+      </section>
+    </div>` : `<p class="muted">Nothing in this view.</p>`}
+    <details class="card review-all">
+      <summary>All entries in this view (${list.length})</summary>
+      <ul class="review-index">${list.map(r => `
+        <li><button class="row ${r === item ? 'current' : ''}" data-action="review-go" data-id="${r.id}">
+          <span class="dot ${r.status}" aria-label="${r.status}"></span>
+          <span class="row-main"><b>${esc(shortDate(r.record.date))} · ${esc(reviewTitle(r))}</b></span>
+          <span class="row-end"><b>${esc(reviewAmount(r))}</b>${r.flag ? '<small>needs a look</small>' : ''}</span>
+        </button></li>`).join('')}</ul>
+    </details>
+    ${count('pending') === 0 ? `<section class="card"><h3>All done</h3>
+      <p class="fine">${count('approved')} entries were added to your books and ${count('skipped')} were skipped.</p>
+      <button class="btn block" data-action="review-clear">Clear the review list</button></section>` : ''}
+    `}`;
+
+  const img = view.querySelector('.review-photo img');
+  if (img) img.addEventListener('error', () => { img.closest('.review-photo-card').hidden = true; });
+}
+
+function reviewTitle(r) {
+  const x = r.record;
+  return ({ trip: x.purpose, expense: [x.vendor, x.notes].filter(Boolean).join(' – '), job: r.customerName || x.notes,
+    payout: S.workerName(x.workerId), contribution: x.description })[r.kind] || '';
+}
+
+function reviewAmount(r) {
+  return r.kind === 'trip' ? num(r.record.miles) + ' mi' : money(r.record.amount);
+}
+
+function reviewPrepare(item) {
+  const rec = JSON.parse(JSON.stringify(item.record));
+  delete rec.id;
+  if (item.kind === 'job') {
+    rec.customerId = S.findOrCreateCustomer(item.customerName);
+    rec.services = rec.services || [];
+    rec.crew = rec.crew || [];
+  }
+  return rec;
+}
+
+function reviewApprove(item, list) {
+  const saved = S.upsert(S.REVIEW_TARGET[item.kind], reviewPrepare(item));
+  ui.reviewId = nextPendingAfter(list, item);
+  S.setReviewStatus(item.id, 'approved', saved.id);
+}
+
+function reviewEdit(item, list) {
+  const prefill = reviewPrepare(item);
+  const opts = { onSaved: saved => { ui.reviewId = nextPendingAfter(list, item); S.setReviewStatus(item.id, 'approved', saved.id); } };
+  ({
+    trip: () => tripForm(prefill, opts),
+    expense: () => expenseForm(prefill, opts),
+    job: () => jobForm(prefill, '', opts),
+    payout: () => payoutForm(prefill, {}, opts),
+    contribution: () => contributionForm(prefill, opts),
+  })[item.kind]();
+}
+
+function reviewAct(what) {
+  const list = reviewList();
+  const item = currentReview(list);
+  if (!item) return;
+  const i = list.indexOf(item);
+  if (what === 'add' && item.status === 'pending') reviewApprove(item, list);
+  else if (what === 'edit' && item.status === 'pending') reviewEdit(item, list);
+  else if (what === 'skip' && item.status === 'pending') { ui.reviewId = nextPendingAfter(list, item); S.setReviewStatus(item.id, 'skipped'); }
+  else if (what === 'undo' && item.status !== 'pending') {
+    if (item.status === 'approved' && item.recordId) S.remove(S.REVIEW_TARGET[item.kind], item.recordId);
+    ui.reviewId = item.id;
+    S.setReviewStatus(item.id, 'pending');
+  } else if (what === 'prev' || what === 'next') {
+    ui.reviewId = list[(i + (what === 'next' ? 1 : -1) + list.length) % list.length].id;
+    renderReview();
+  }
+}
+
+document.addEventListener('keydown', e => {
+  if (!current.startsWith('#/review') || sheetHandlers || document.querySelector('.dialog-backdrop')) return;
+  if (e.metaKey || e.ctrlKey || e.altKey || /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) return;
+  const map = { a: 'add', e: 'edit', s: 'skip', u: 'undo', ArrowLeft: 'prev', ArrowRight: 'next' };
+  const what = map[e.key];
+  if (!what) return;
+  e.preventDefault();
+  reviewAct(what);
+});
 
 // ---------------------------------------------------------------- EXPENSES & MILEAGE
 
@@ -838,7 +1030,7 @@ function renderExpenses() {
         <ul class="list">${g.list.map(m => `
           <li><button class="row" data-action="edit-trip" data-id="${m.id}">
             <div class="row-main"><b>${esc(m.purpose || 'Business trip')}</b>
-              <small>${esc(shortDate(m.date))}${m.customerId ? ' · ' + esc(S.customerName(m.customerId)) : ''}</small></div>
+              <small>${esc(shortDate(m.date))}${m.vehicle ? ' · ' + esc(m.vehicle) : ''}${m.customerId ? ' · ' + esc(S.customerName(m.customerId)) : ''}</small></div>
             <div class="row-end"><b>${num(m.miles)} mi</b><small>${money((Number(m.miles) || 0) * rate)}</small></div>
           </button></li>`).join('')}</ul>`).join('');
   }
@@ -851,7 +1043,7 @@ function renderExpenses() {
     ${body}`;
 }
 
-function expenseForm(e = {}) {
+function expenseForm(e = {}, opts = {}) {
   const d = S.get();
   const isNew = !e.id;
   const exp = { date: isoDate(), category: d.settings.expenseCategories[0], paymentMethod: 'Card', ...e };
@@ -868,10 +1060,13 @@ function expenseForm(e = {}) {
         'Also records this as an owner contribution in the Journal.')}
       ${field('Notes', `<textarea name="notes" rows="3">${esc(exp.notes)}</textarea>`)}
     `,
-    onSave: v => S.upsert('expenses', {
-      ...e, date: v.date, amount: parseFloat(v.amount) || 0, vendor: v.vendor.trim(), category: v.category,
-      paymentMethod: v.paymentMethod, paidPersonally: v.paidPersonally, notes: v.notes.trim(),
-    }),
+    onSave: v => {
+      const saved = S.upsert('expenses', {
+        ...e, date: v.date, amount: parseFloat(v.amount) || 0, vendor: v.vendor.trim(), category: v.category,
+        paymentMethod: v.paymentMethod, paidPersonally: v.paidPersonally, notes: v.notes.trim(),
+      });
+      if (opts.onSaved) opts.onSaved(saved);
+    },
     onDelete: isNew ? null : () => S.remove('expenses', e.id),
     deleteLabel: 'Delete expense',
     onMount: f => {
@@ -882,10 +1077,12 @@ function expenseForm(e = {}) {
   });
 }
 
-function tripForm(m = {}) {
+function tripForm(m = {}, opts = {}) {
   const d = S.get();
   const isNew = !m.id;
   const trip = { date: isoDate(), ...m };
+  const vehicles = [...new Set(d.mileage.map(t => t.vehicle).filter(Boolean))].sort();
+  if (isNew && !m.vehicle && d.mileage.length) trip.vehicle = [...d.mileage].sort(S.byDateDesc)[0].vehicle || '';
   const customers = [...d.customers].sort((a, b) => a.name.localeCompare(b.name)).map(c => ({ value: c.id, label: c.name }));
   const form = openSheet({
     title: isNew ? 'Log trip' : 'Edit trip',
@@ -898,6 +1095,8 @@ function tripForm(m = {}) {
         ${field('End odometer', `<input name="odoEnd" type="number" inputmode="decimal" value="${esc(trip.odoEnd)}">`)}
       </div>
       ${field('Purpose', `<input name="purpose" value="${esc(trip.purpose)}" placeholder="Job at customer, supply run…">`)}
+      ${field('Vehicle', `<input name="vehicle" list="vehicle-list" value="${esc(trip.vehicle)}" placeholder="F-150, Baymax…" autocomplete="off">
+        <datalist id="vehicle-list">${options(vehicles)}</datalist>`)}
       ${field('Customer (optional)', `<select name="customerId">${options(customers, trip.customerId, { blank: 'None' })}</select>`)}
       ${isNew ? toggle('roundTrip', false, 'Round trip', 'Doubles the miles when you save.') : ''}
       ${field('Notes', `<textarea name="notes" rows="2">${esc(trip.notes)}</textarea>`)}
@@ -905,10 +1104,11 @@ function tripForm(m = {}) {
     onSave: v => {
       let miles = parseFloat(v.miles) || 0;
       if (v.roundTrip) miles *= 2;
-      S.upsert('mileage', {
-        ...m, date: v.date, miles, odoStart: v.odoStart, odoEnd: v.odoEnd,
+      const saved = S.upsert('mileage', {
+        ...m, date: v.date, miles, odoStart: v.odoStart, odoEnd: v.odoEnd, vehicle: v.vehicle.trim(),
         purpose: v.purpose.trim(), customerId: v.customerId, notes: v.notes.trim(),
       });
+      if (opts.onSaved) opts.onSaved(saved);
     },
     onDelete: isNew ? null : () => S.remove('mileage', m.id),
     deleteLabel: 'Delete trip',
@@ -953,7 +1153,7 @@ function renderJournal() {
   `;
 }
 
-function contributionForm(c = {}) {
+function contributionForm(c = {}, opts = {}) {
   const isNew = !c.id;
   const entry = { date: isoDate(), debitAccount: S.CONTRIBUTION_ACCOUNTS[0], ...c };
   const accounts = S.CONTRIBUTION_ACCOUNTS.includes(entry.debitAccount) ? S.CONTRIBUTION_ACCOUNTS : [...S.CONTRIBUTION_ACCOUNTS, entry.debitAccount];
@@ -971,10 +1171,13 @@ function contributionForm(c = {}) {
       </div>
       ${field('Notes', `<textarea name="notes" rows="3">${esc(entry.notes)}</textarea>`)}
     `,
-    onSave: v => S.upsert('contributions', {
-      ...c, date: v.date, description: v.description.trim(), amount: parseFloat(v.amount) || 0,
-      debitAccount: v.debitAccount, notes: v.notes.trim(),
-    }),
+    onSave: v => {
+      const saved = S.upsert('contributions', {
+        ...c, date: v.date, description: v.description.trim(), amount: parseFloat(v.amount) || 0,
+        debitAccount: v.debitAccount, notes: v.notes.trim(),
+      });
+      if (opts.onSaved) opts.onSaved(saved);
+    },
     onDelete: isNew ? null : () => S.remove('contributions', c.id),
     deleteLabel: 'Delete entry',
   });
@@ -1077,6 +1280,29 @@ const actions = {
   'edit-trip': el => tripForm(S.find('mileage', el.dataset.id)),
   'new-contribution': () => contributionForm(),
   'edit-contribution': el => contributionForm(S.find('contributions', el.dataset.id)),
+  'review-add': () => reviewAct('add'),
+  'review-edit': () => reviewAct('edit'),
+  'review-skip': () => reviewAct('skip'),
+  'review-undo': () => reviewAct('undo'),
+  'review-prev': () => reviewAct('prev'),
+  'review-next': () => reviewAct('next'),
+  'review-go': el => { ui.reviewId = el.dataset.id; renderReview(); window.scrollTo(0, 0); },
+  'review-filter': el => { ui.reviewFilter = el.dataset.filter; ui.reviewId = ''; renderReview(); },
+  'review-zoom': el => el.closest('.review-photo').classList.toggle('zoomed'),
+  'review-add-rest': async () => {
+    const list = reviewList();
+    const rest = list.filter(r => r.status === 'pending' && !r.flag);
+    if (!await askConfirm(`Add all ${rest.length} remaining entries in this view exactly as transcribed? Entries marked "needs a look" stay for you to check one at a time.`, { ok: `Add ${rest.length}` })) return;
+    for (const r of rest) {
+      const saved = S.upsert(S.REVIEW_TARGET[r.kind], reviewPrepare(r));
+      r.status = 'approved';
+      r.recordId = saved.id;
+    }
+    ui.reviewId = '';
+    S.setReviewStatus(rest[rest.length - 1].id, 'approved', rest[rest.length - 1].recordId);
+    toast(`Added ${rest.length} entries`);
+  },
+  'review-clear': () => { S.clearFinishedReview(); go('#/home'); },
   'new-worker': () => workerForm(),
   'edit-worker': el => workerForm(S.find('workers', el.dataset.id)),
   'new-payout': el => payoutForm({}, { worker: el.dataset.worker, amount: el.dataset.amount }),
