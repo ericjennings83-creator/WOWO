@@ -16,7 +16,18 @@ and keeps all data **on your phone**. There are no accounts, servers, or fees.
 | **Journal** | Owner contribution journal entries: money or property you put into the business from personal funds, shown as **Dr [account] / Cr Owner's Capital**. Any expense marked *Paid with personal money* is added here automatically. |
 | **Settings** (⚙︎ on Home) | Business name, mileage rate, your service menu and prices, expense categories, 1099 threshold, backup/restore, CSV exports (including crew payments and 1099 totals), and erase all data. |
 
-## Put it on your iPhone
+## Use it on claude.ai (easiest)
+
+The app is published privately on claude.ai at
+<https://claude.ai/artifact/97cvndXDbFeiZfVdVqDDss>. Open it in Safari while
+signed in to Claude, then **Share → Add to Home Screen**. Data is saved to your
+own private space in your Claude account, so it's the same on every device where
+you sign in. Only you can see it.
+
+To publish changes there, republish `claude.html` with `css/` and `js/` as
+supporting files.
+
+## Or put it on your iPhone from GitHub Pages
 
 **Publish the site (one time).** The GitHub iPhone app can't change repo
 settings, so do this in **Safari**, signed in to github.com. If a page looks cut

@@ -99,6 +99,19 @@ function normalize(d) {
 
 let data = load();
 const listeners = new Set();
+const statusListeners = new Set();
+
+// Where data is kept: 'device' (this browser only) or, when the app runs on
+// claude.ai, 'cloud' (the owner's private space in the artifact's database).
+let status = { mode: 'device', state: 'idle' };
+
+function setStatus(patch) {
+  status = { ...status, ...patch };
+  statusListeners.forEach(fn => fn(status));
+}
+
+export function onStatus(fn) { statusListeners.add(fn); }
+export function getStatus() { return status; }
 
 function load() {
   try {
@@ -114,13 +127,132 @@ function save() {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
   } catch (e) {
-    alert('Could not save — your phone storage may be full. Export a backup from Settings.');
-    throw e;
+    // Device storage can be full or blocked. In cloud mode that's fine;
+    // otherwise tell the user.
+    if (status.mode !== 'cloud') setStatus({ state: 'error', message: 'Could not save on this device. Export a backup from Settings.' });
   }
   listeners.forEach(fn => fn());
+  if (status.mode === 'cloud') scheduleSync();
 }
 
 export function onChange(fn) { listeners.add(fn); }
+
+// ---------- claude.ai cloud storage ----------
+// Records are grouped into documents so each stays well under the store's
+// 256 KiB limit: dated records by month, the rest into 8 hash buckets.
+
+const DATED = ['jobs', 'expenses', 'mileage', 'contributions', 'payouts'];
+const UNDATED = ['customers', 'workers'];
+let cloud = null; // { db, base }
+let synced = new Map(); // doc id -> JSON last written
+let syncTimer = null;
+let syncing = null;
+
+function bucketHash(id) {
+  let h = 0;
+  for (const ch of String(id)) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  return h % 8;
+}
+
+function toDocs(d) {
+  const docs = new Map([['settings__main', { settings: d.settings, version: d.version }]]);
+  const put = (key, item) => {
+    if (!docs.has(key)) docs.set(key, { items: {} });
+    docs.get(key).items[item.id] = item;
+  };
+  for (const c of DATED) for (const it of d[c]) put(`${c}__${(it.date || 'nodate').slice(0, 7)}`, it);
+  for (const c of UNDATED) for (const it of d[c]) put(`${c}__b${bucketHash(it.id)}`, it);
+  return docs;
+}
+
+function fromDocs(snaps) {
+  const out = emptyData();
+  for (const s of snaps) {
+    const [name] = s.id.split('__');
+    const body = s.data() || {};
+    if (name === 'settings') out.settings = { ...out.settings, ...body.settings };
+    else if (out[name]) out[name].push(...Object.values(body.items || {}).map(x => JSON.parse(JSON.stringify(x))));
+  }
+  return normalize(out);
+}
+
+function hasAnyRecords(d) {
+  return [...DATED, ...UNDATED].some(c => d[c].length);
+}
+
+export async function connectCloud() {
+  const c = typeof window !== 'undefined' && window.claude && typeof window.claude.use === 'function' ? window.claude : null;
+  if (!c) return;
+  setStatus({ mode: 'device', state: 'connecting' });
+  try {
+    const [db, user] = await Promise.all([c.use('db'), c.use('user')]);
+    const id = user && await user.id();
+    if (!db || !id) { setStatus({ mode: 'device', state: 'idle', cloudUnavailable: true }); return; }
+    cloud = { db, base: `data/users/${id}` };
+    await pullCloud(true);
+  } catch (e) {
+    console.error('Cloud storage unavailable', e);
+    setStatus({ mode: 'device', state: 'idle', cloudUnavailable: true });
+  }
+}
+
+async function pullCloud(first = false) {
+  const snap = await cloud.db.collection(cloud.base).get();
+  const remote = fromDocs(snap.docs.filter(s => s.exists));
+  synced = new Map(snap.docs.filter(s => s.exists).map(s => [s.id, JSON.stringify(s.data())]));
+  if (first && !snap.docs.length && hasAnyRecords(data)) {
+    // First run on this account: move what's on this device up to the cloud.
+    setStatus({ mode: 'cloud', state: 'saving' });
+    await syncNow();
+    return;
+  }
+  data = remote;
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); } catch (e) { /* cache only */ }
+  setStatus({ mode: 'cloud', state: 'saved' });
+  listeners.forEach(fn => fn());
+}
+
+// Re-read when the app comes back to the foreground, so edits made on
+// another device show up.
+export async function refreshFromCloud() {
+  if (!cloud || syncing || syncTimer) return;
+  try { await pullCloud(); } catch (e) { /* keep what we have */ }
+}
+
+function scheduleSync() {
+  setStatus({ state: 'saving' });
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(() => { syncTimer = null; syncNow(); }, 400);
+}
+
+async function syncNow() {
+  if (syncing) { await syncing; return scheduleSync(); }
+  syncing = (async () => {
+    const docs = toDocs(data);
+    const col = cloud.db.collection(cloud.base);
+    try {
+      // One write at a time, only for documents that changed.
+      for (const [id, body] of docs) {
+        const json = JSON.stringify(body);
+        if (synced.get(id) === json) continue;
+        await col.doc(id).set(body);
+        synced.set(id, json);
+      }
+      for (const id of [...synced.keys()]) {
+        if (docs.has(id)) continue;
+        await col.doc(id).delete();
+        synced.delete(id);
+      }
+      setStatus({ mode: 'cloud', state: 'saved', message: '' });
+    } catch (e) {
+      console.error('Cloud save failed', e);
+      const full = e && e.code === 'quota_exceeded';
+      setStatus({ state: 'error', message: full ? 'Cloud storage is full. Export a backup, then delete old records.' : 'Could not save to the cloud. Your changes are kept on this device and will retry on your next change.' });
+    }
+  })();
+  await syncing;
+  syncing = null;
+}
 
 export function get() { return data; }
 

@@ -1,5 +1,5 @@
 import * as S from './store.js';
-import { esc, money, num, isoDate, shortDate, monthKey, monthLabel, periodRange, download } from './util.js';
+import { esc, money, num, isoDate, shortDate, monthKey, monthLabel, periodRange } from './util.js';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const view = $('#view');
@@ -17,10 +17,22 @@ const ui = {
 
 // ---------------------------------------------------------------- routing
 
-const TABS = ['home', 'customers', 'jobs', 'crew', 'expenses', 'journal'];
+const IN_CLAUDE = !!(window.claude && typeof window.claude.use === 'function');
+if (IN_CLAUDE) document.documentElement.classList.add('in-claude');
+
+// Navigation state lives in the page. On claude.ai the frame can't carry a
+// #/path hash, so the hash is only mirrored for the stand-alone web app.
+let current = /^#\/(home|customers|customer|jobs|crew|worker|expenses|journal|settings)\b/.test(location.hash) ? location.hash : '#/home';
+
+function go(path) {
+  current = path;
+  if (!IN_CLAUDE) { try { history.replaceState(null, '', path); } catch (e) { /* ignore */ } }
+  route();
+  window.scrollTo(0, 0);
+}
 
 function route() {
-  const [name, id] = (location.hash.replace(/^#\/?/, '') || 'home').split('/');
+  const [name, id] = (current.replace(/^#\/?/, '') || 'home').split('/');
   const tab = { customer: 'customers', worker: 'crew', settings: 'home' }[name] || name;
   document.querySelectorAll('.tabbar a').forEach(a => a.classList.toggle('active', a.dataset.tab === tab));
   const renderers = {
@@ -43,13 +55,88 @@ function rerender() {
   window.scrollTo(0, scroll);
 }
 
-window.addEventListener('hashchange', () => { route(); window.scrollTo(0, 0); });
+window.addEventListener('hashchange', () => {
+  if (!IN_CLAUDE && location.hash.startsWith('#/') && location.hash !== current) go(location.hash);
+});
+
+document.addEventListener('click', e => {
+  const a = e.target.closest('a[href^="#/"]');
+  if (!a) return;
+  e.preventDefault();
+  go(a.getAttribute('href'));
+});
 S.onChange(rerender);
 
 // ---------------------------------------------------------------- helpers
 
 function header(title, right = '') {
-  return `<header class="topbar"><h1>${esc(title)}</h1><div class="topbar-actions">${right}</div></header>`;
+  return `<header class="topbar"><h1>${esc(title)}</h1><div class="topbar-actions">${right}</div></header>${statusBanner()}`;
+}
+
+function statusBanner() {
+  const st = S.getStatus();
+  if (st.state === 'error') return `<div class="banner danger" role="alert">${esc(st.message)}</div>`;
+  if (IN_CLAUDE && st.cloudUnavailable) return `<div class="banner warn">Cloud saving isn't available right now, so changes are only kept in this browser. Export a backup from Settings.</div>`;
+  return '';
+}
+
+function statusLine() {
+  const st = S.getStatus();
+  if (st.mode === 'cloud') {
+    return st.state === 'saving' ? 'Saving to your Claude account…' : st.state === 'error' ? st.message : 'Saved to your Claude account. Open this page on any device where you sign in to Claude to see the same data.';
+  }
+  if (st.state === 'connecting') return 'Connecting to your Claude account…';
+  return 'Your data is stored only in this browser on this device.';
+}
+
+// ---------------------------------------------------------------- confirm dialog
+// claude.ai pages can't show confirm()/alert(), so confirmations are in-page.
+
+function askConfirm(message, { ok = 'OK', danger = false, cancel = 'Cancel' } = {}) {
+  return new Promise(resolve => {
+    const wrap = document.createElement('div');
+    wrap.className = 'dialog-backdrop';
+    wrap.innerHTML = `<div class="dialog" role="alertdialog" aria-modal="true" aria-labelledby="dialog-msg">
+      <p id="dialog-msg">${esc(message)}</p>
+      <div class="dialog-actions">
+        ${cancel ? `<button type="button" class="btn" data-answer="no">${esc(cancel)}</button>` : ''}
+        <button type="button" class="btn ${danger ? 'danger-fill' : 'primary'}" data-answer="yes">${esc(ok)}</button>
+      </div></div>`;
+    const done = answer => { wrap.remove(); document.removeEventListener('keydown', onKey); resolve(answer); };
+    const onKey = e => { if (e.key === 'Escape') done(false); };
+    wrap.addEventListener('click', e => {
+      const b = e.target.closest('[data-answer]');
+      if (b) done(b.dataset.answer === 'yes');
+      else if (e.target === wrap) done(false);
+    });
+    document.addEventListener('keydown', onKey);
+    document.body.appendChild(wrap);
+    wrap.querySelector('[data-answer="yes"]').focus();
+  });
+}
+
+async function saveFile(filename, text, type) {
+  if (IN_CLAUDE) {
+    const downloads = await window.claude.use('downloads');
+    if (!downloads) { toast('Saving files is not available here.'); return; }
+    try { await downloads.save({ filename, data: text }); } catch (e) {
+      if (e && e.code !== 'declined') toast('Could not save the file. Try again.');
+    }
+    return;
+  }
+  const blob = new Blob([text], { type });
+  const file = new File([blob], filename, { type });
+  // On iPhone the share sheet lets you save to Files, AirDrop, email, etc.
+  if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    navigator.share({ files: [file], title: filename }).catch(() => {});
+    return;
+  }
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
 }
 
 function addButton(action, label = 'Add') {
@@ -142,9 +229,13 @@ sheetRoot.addEventListener('click', e => {
   const btn = e.target.closest('[data-sheet]');
   if (!btn) return;
   if (btn.dataset.sheet === 'cancel') closeSheet();
-  if (btn.dataset.sheet === 'delete' && sheetHandlers.onDelete && confirm('Delete this? This cannot be undone.')) {
-    sheetHandlers.onDelete();
-    closeSheet();
+  if (btn.dataset.sheet === 'delete' && sheetHandlers.onDelete) {
+    const onDelete = sheetHandlers.onDelete;
+    askConfirm('Delete this? This cannot be undone.', { ok: 'Delete', danger: true }).then(yes => {
+      if (!yes) return;
+      onDelete();
+      closeSheet();
+    });
   }
 });
 
@@ -315,7 +406,7 @@ function customerResults() {
 
 function renderCustomer(id) {
   const c = S.find('customers', id);
-  if (!c) { location.hash = '#/customers'; return; }
+  if (!c) { go('#/customers'); return; }
   const jobs = S.get().jobs.filter(j => j.customerId === id).sort(S.byDateDesc);
   const lifetime = jobs.reduce((s, j) => s + S.jobTotal(j), 0);
   const phone = (c.phone || '').replace(/[^\d+]/g, '');
@@ -373,9 +464,9 @@ function customerForm(c = {}) {
         if (veh) item.vehicles.push(veh);
       }
       const saved = S.upsert('customers', item);
-      if (isNew) location.hash = '#/customer/' + saved.id;
+      if (isNew) go('#/customer/' + saved.id);
     },
-    onDelete: isNew ? null : () => { S.deleteCustomer(c.id); location.hash = '#/customers'; },
+    onDelete: isNew ? null : () => { S.deleteCustomer(c.id); go('#/customers'); },
     deleteLabel: 'Delete customer',
   });
 }
@@ -412,7 +503,7 @@ function vehicleForm(customerId, vehicleId) {
     body: vehicleFields(v),
     onSave: vals => {
       const veh = vehicleFromValues(vals, v);
-      if (!veh) { alert('Enter at least a make, model, or plate.'); return false; }
+      if (!veh) { toast('Enter at least a make, model, or plate.'); return false; }
       const vehicles = v.id ? c.vehicles.map(x => x.id === v.id ? veh : x) : [...c.vehicles, veh];
       S.upsert('customers', { ...c, vehicles });
     },
@@ -621,7 +712,7 @@ function payoutRow(p) {
 
 function renderWorker(id) {
   const w = S.find('workers', id);
-  if (!w) { location.hash = '#/crew'; return; }
+  if (!w) { go('#/crew'); return; }
   const e = S.workerEarnings(id);
   const phone = (w.phone || '').replace(/[^\d+]/g, '');
   view.innerHTML = `
@@ -682,9 +773,9 @@ function workerForm(w = {}) {
         ...w, name: v.name.trim(), commissionPct: parseFloat(v.commissionPct) || 0, phone: v.phone.trim(),
         email: v.email.trim(), w9OnFile: v.w9OnFile, active: v.active, notes: v.notes.trim(),
       });
-      if (isNew) location.hash = '#/worker/' + saved.id;
+      if (isNew) go('#/worker/' + saved.id);
     },
-    onDelete: isNew || hasHistory ? null : () => { S.remove('workers', w.id); location.hash = '#/crew'; },
+    onDelete: isNew || hasHistory ? null : () => { S.remove('workers', w.id); go('#/crew'); },
     deleteLabel: 'Delete crew member',
   });
 }
@@ -918,7 +1009,8 @@ function renderSettings() {
 
     <div class="section-head"><h2>Backup</h2></div>
     <section class="card stack">
-      <p class="fine">Your data is stored only on this iPhone. Export a backup now and then and save it to Files or iCloud Drive.</p>
+      <p class="fine" id="sync-line">${esc(statusLine())}</p>
+      <p class="fine">Export a backup now and then and keep it in Files or iCloud Drive.</p>
       <button class="btn block" data-action="export-json">Export backup</button>
       <label class="btn block file-btn">Restore from backup<input type="file" accept="application/json,.json" data-action="import-json" hidden></label>
     </section>
@@ -1002,14 +1094,13 @@ const actions = {
     tip.textContent = el.dataset.tip;
     tip.hidden = false;
   },
-  'export-json': () => download(`detailing-backup-${isoDate()}.json`, S.exportJSON(), 'application/json'),
-  'csv': el => download(`${el.dataset.kind}-${isoDate()}.csv`, S.csvFor(el.dataset.kind), 'text/csv'),
-  'reset': () => {
-    if (confirm('Erase ALL customers, jobs, crew, payments, expenses, mileage and journal entries from this phone?') &&
-        confirm('Really erase everything? Export a backup first if you might need it.')) {
-      S.resetAll();
-      toast('All data erased');
-    }
+  'export-json': () => saveFile(`detailing-backup-${isoDate()}.json`, S.exportJSON(), 'application/json'),
+  'csv': el => saveFile(`${el.dataset.kind}-${isoDate()}.csv`, S.csvFor(el.dataset.kind), 'text/csv'),
+  'reset': async () => {
+    const yes = await askConfirm('Erase ALL clients, jobs, crew, payments, expenses, mileage and journal entries? This cannot be undone. Export a backup first if you might need it.', { ok: 'Erase everything', danger: true });
+    if (!yes) return;
+    S.resetAll();
+    toast('All data erased');
   },
 };
 
@@ -1024,11 +1115,15 @@ view.addEventListener('change', e => {
   if (e.target.dataset.action !== 'import-json') return;
   const file = e.target.files[0];
   if (!file) return;
-  file.text().then(text => {
-    if (!confirm('Replace everything on this phone with the backup?')) return;
-    S.importJSON(text);
-    toast('Backup restored');
-  }).catch(err => alert('Could not restore: ' + err.message));
+  e.target.value = '';
+  file.text()
+    .then(async text => {
+      JSON.parse(text); // fail early on a file that isn't a backup
+      if (!await askConfirm('Replace everything in the app with this backup?', { ok: 'Restore', danger: true })) return;
+      S.importJSON(text);
+      toast('Backup restored');
+    })
+    .catch(err => askConfirm('Could not restore: ' + (err instanceof SyntaxError ? 'that file is not a backup.' : err.message), { cancel: '' }));
 });
 
 // Only the results re-render, so the keyboard stays up while typing.
@@ -1042,11 +1137,21 @@ view.addEventListener('input', e => {
 
 // ---------------------------------------------------------------- boot
 
-if (!TABS.includes((location.hash.replace(/^#\/?/, '') || 'home').split('/')[0]) && !/^#\/(customer|worker|settings)/.test(location.hash)) {
-  location.hash = '#/home';
-}
 route();
 
-if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+// Keep the save indicator current without redrawing the page on every save.
+let lastBanner = '';
+S.onStatus(() => {
+  const line = document.getElementById('sync-line');
+  if (line) line.textContent = statusLine();
+  const banner = statusBanner();
+  if (banner !== lastBanner) { lastBanner = banner; if (!sheetHandlers) rerender(); }
+});
+S.connectCloud();
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && !sheetHandlers) S.refreshFromCloud();
+});
+
+if (!IN_CLAUDE && 'serviceWorker' in navigator && location.protocol !== 'file:') {
   navigator.serviceWorker.register('sw.js').catch(err => console.warn('Service worker not registered', err));
 }

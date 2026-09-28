@@ -73,19 +73,3 @@ export function periodRange(kind, offset = 0, today = new Date()) {
   }
   return { start: isoDate(start), end: isoDate(end), label };
 }
-
-export function download(filename, text, type = 'text/plain') {
-  const blob = new Blob([text], { type });
-  const file = new File([blob], filename, { type });
-  // On iPhone the share sheet lets you save to Files, AirDrop, email, etc.
-  if (navigator.canShare && navigator.canShare({ files: [file] })) {
-    navigator.share({ files: [file], title: filename }).catch(() => {});
-    return;
-  }
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
-}

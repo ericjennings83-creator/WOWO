@@ -42,6 +42,26 @@
   }
 }
 
+:root[data-theme="dark"] {
+    --bg: #0d0d0d;
+    --surface: #1a1a19;
+    --surface-2: #262624;
+    --text: #ffffff;
+    --text-2: #c3c2b7;
+    --muted: #898781;
+    --line: #2e2e2c;
+    --accent: #3987e5;
+    --accent-ink: #86b6ef;
+    --accent-soft: #16263a;
+    --series: #3987e5;
+    --track: #2a2a28;
+    --good: #4cc24c;
+    --warn-bg: #3a2c05;
+    --warn-ink: #f5c65a;
+    --danger: #e66767;
+    color-scheme: dark;
+  }
+
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 
 html, body { margin: 0; }
@@ -343,3 +363,24 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); ou
 .mini-table td { padding: 8px 0; border-top: 1px solid var(--line); font-variant-numeric: tabular-nums; }
 .mini-table td:nth-child(2), .mini-table th:nth-child(2) { text-align: right; padding-right: 8px; }
 .mini-table td:last-child { text-align: right; }
+
+/* ---------- dialogs & status ---------- */
+.dialog-backdrop {
+  position: fixed; inset: 0; z-index: 80; background: rgba(0,0,0,.45);
+  display: grid; place-items: center; padding: 16px;
+}
+.dialog {
+  width: min(360px, 100%); background: var(--surface); color: var(--text);
+  border-radius: 16px; padding: 20px; box-shadow: 0 12px 40px rgba(0,0,0,.3);
+}
+.dialog p { margin: 0 0 16px; font-size: 16px; line-height: 1.45; }
+.dialog-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.btn.danger-fill { background: var(--danger); border-color: var(--danger); color: #fff; }
+.banner.danger { background: var(--danger); color: #fff; }
+
+/* Inside claude.ai the page frame already clears the phone's status bar. */
+html.in-claude #view { padding-top: 8px; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition: none !important; animation: none !important; }
+}
