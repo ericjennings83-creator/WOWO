@@ -18,15 +18,23 @@ and keeps all data **on your phone**. There are no accounts, servers, or fees.
 
 ## Put it on your iPhone
 
-1. **Publish the site (one time).** On GitHub, open this repo and go to
-   **Settings → Pages**. Under *Build and deployment* set **Source** to
-   **GitHub Actions**. The included workflow publishes the app on every push.
-   It shows up at `https://<your-username>.github.io/<repo-name>/`.
-   *(GitHub Pages on a private repo requires a paid GitHub plan. The published
-   page holds only the app code. Your business data never leaves your phone.)*
-2. **Install it.** On your iPhone, open that link in **Safari**, tap
-   **Share → Add to Home Screen**, then **Add**.
-3. Open **Detailing** from your Home Screen.
+**Publish the site (one time).** The GitHub iPhone app can't change repo
+settings, so do this in **Safari**, signed in to github.com. If a page looks cut
+off, tap **aA → Request Desktop Website**.
+
+1. Open <https://github.com/ericjennings83-creator/WOWO/settings>, scroll to the
+   bottom, and choose **Danger Zone → Change visibility → Change to public**.
+   Free GitHub Pages needs a public repo. Only the app's code becomes public.
+   Your business data stays on your phone and is never uploaded.
+2. Open <https://github.com/ericjennings83-creator/WOWO/settings/pages>. Under
+   **Build and deployment → Source**, choose **GitHub Actions**.
+
+The included workflow publishes the app every time `main` changes, at
+<https://ericjennings83-creator.github.io/WOWO/>.
+
+**Install it.** Open that link in **Safari** on your iPhone, tap
+**Share → Add to Home Screen**, then **Add**. Open **Detailing** from your Home
+Screen.
 
 ## Back up your data
 
