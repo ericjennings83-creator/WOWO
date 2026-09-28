@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Detailing Tracker</title>
+  <meta name="description" content="Personal tracker for a mobile detailing business: customers, jobs, expenses, mileage, owner contributions and earnings.">
+  <meta name="theme-color" content="#f5f5f3" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0d0d0d" media="(prefers-color-scheme: dark)">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Detailing">
+  <meta name="format-detection" content="telephone=no">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/icon.svg" id="touch-icon">
+  <link rel="stylesheet" href="css/styles.css">
+  <script>
+    // iOS needs a PNG for the Home Screen icon: draw the SVG icon to a PNG here.
+    (function () {
+      var img = new Image();
+      img.onload = function () {
+        var c = document.createElement('canvas');
+        c.width = c.height = 180;
+        var ctx = c.getContext('2d');
+        ctx.fillStyle = '#1c5cab'; // iOS rounds the corners itself
+        ctx.fillRect(0, 0, 180, 180);
+        ctx.drawImage(img, 0, 0, 180, 180);
+        try { document.getElementById('touch-icon').href = c.toDataURL('image/png'); } catch (e) {}
+      };
+      img.src = 'icons/icon.svg';
+    })();
+  </script>
+</head>
+<body>
+  <main id="view"></main>
+
+  <nav class="tabbar" aria-label="Sections">
+    <a href="#/home" data-tab="home"><span class="ti">◉</span>Home</a>
+    <a href="#/customers" data-tab="customers"><span class="ti">☺</span>Clients</a>
+    <a href="#/jobs" data-tab="jobs"><span class="ti">✦</span>Jobs</a>
+    <a href="#/crew" data-tab="crew"><span class="ti">⚇</span>Crew</a>
+    <a href="#/expenses" data-tab="expenses"><span class="ti">$</span>Costs</a>
+    <a href="#/journal" data-tab="journal"><span class="ti">✎</span>Journal</a>
+  </nav>
+
+  <div id="sheet-root"></div>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
