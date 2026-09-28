@@ -101,6 +101,7 @@ button { font: inherit; color: inherit; }
 .link.strong { font-weight: 700; }
 
 .quick-add { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 4px 0 16px; }
+.quick-add .btn { padding: 0 8px; white-space: nowrap; }
 
 /* ---------- segmented control ---------- */
 .segmented {
@@ -326,3 +327,19 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); ou
   background: var(--text); color: var(--bg); padding: 10px 18px; border-radius: 999px; font-weight: 600; font-size: 14px;
 }
 .toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+/* ---------- crew ---------- */
+.crew-list { display: grid; gap: 8px; margin-bottom: 6px; }
+.crew-row { display: grid; grid-template-columns: 1fr 72px auto 76px; align-items: center; gap: 6px; }
+.crew-row .chip span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.crew-row input.pct { padding: 8px; text-align: right; }
+.crew-row .pct-sign { color: var(--text-2); }
+.crew-row .crew-pay { text-align: right; font-variant-numeric: tabular-nums; }
+.tag.warn { background: var(--warn-bg); color: var(--warn-ink); }
+.year-nav { display: inline-flex; align-items: center; gap: 8px; font-size: 15px; }
+.btn-icon.sm { width: 30px; height: 30px; font-size: 18px; }
+.mini-table { width: 100%; border-collapse: collapse; font-size: 15px; }
+.mini-table th { text-align: left; font-size: 12px; font-weight: 600; color: var(--text-2); padding: 0 0 6px; }
+.mini-table td { padding: 8px 0; border-top: 1px solid var(--line); font-variant-numeric: tabular-nums; }
+.mini-table td:nth-child(2), .mini-table th:nth-child(2) { text-align: right; padding-right: 8px; }
+.mini-table td:last-child { text-align: right; }

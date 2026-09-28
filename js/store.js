@@ -74,9 +74,12 @@ function emptyData() {
     expenses: [],
     mileage: [],
     contributions: [],
+    workers: [],
+    payouts: [],
     settings: {
       businessName: 'My Detailing',
       mileageRate: 0.70,
+      reportThreshold1099: 2000,
       services: DEFAULT_SERVICES.map(s => ({ ...s })),
       expenseCategories: [...DEFAULT_EXPENSE_CATEGORIES],
     },
@@ -86,10 +89,11 @@ function emptyData() {
 function normalize(d) {
   const base = emptyData();
   const out = { ...base, ...d, settings: { ...base.settings, ...(d && d.settings) } };
-  for (const k of ['customers', 'jobs', 'expenses', 'mileage', 'contributions']) {
+  for (const k of ['customers', 'jobs', 'expenses', 'mileage', 'contributions', 'workers', 'payouts']) {
     if (!Array.isArray(out[k])) out[k] = [];
   }
   for (const c of out.customers) if (!Array.isArray(c.vehicles)) c.vehicles = [];
+  for (const j of out.jobs) if (!Array.isArray(j.crew)) j.crew = [];
   return out;
 }
 
@@ -156,6 +160,11 @@ export function deleteCustomer(id) {
   save();
 }
 
+// A worker with jobs or payments keeps their history; only unused ones can be deleted.
+export function workerHasHistory(id) {
+  return data.payouts.some(p => p.workerId === id) || data.jobs.some(j => (j.crew || []).some(c => c.workerId === id));
+}
+
 export function exportJSON() {
   return JSON.stringify(data, null, 2);
 }
@@ -193,6 +202,37 @@ export function describeVehicle(v) {
 
 export function jobTotal(j) {
   return (Number(j.amount) || 0) + (Number(j.tip) || 0);
+}
+
+// ---------- crew payroll (1099 contractors paid a commission on the job price) ----------
+
+export function workerName(id) {
+  const w = id && find('workers', id);
+  return w ? w.name : '';
+}
+
+export function crewPay(job, member) {
+  return Math.round((Number(job.amount) || 0) * (Number(member.pct) || 0)) / 100;
+}
+
+export function jobCommission(job) {
+  return (job.crew || []).reduce((s, m) => s + crewPay(job, m), 0);
+}
+
+export function workerEarnings(workerId, range) {
+  const within = x => !range || inRange(x.date, range);
+  const jobs = data.jobs
+    .filter(j => within(j) && (j.crew || []).some(m => m.workerId === workerId))
+    .map(j => ({ job: j, pay: crewPay(j, j.crew.find(m => m.workerId === workerId)) }))
+    .sort((a, b) => byDateDesc(a.job, b.job));
+  const payouts = data.payouts.filter(p => p.workerId === workerId && within(p)).sort(byDateDesc);
+  const earned = jobs.reduce((s, x) => s + x.pay, 0);
+  const paid = payouts.reduce((s, p) => s + (Number(p.amount) || 0), 0);
+  return { jobs, payouts, earned, paid, owed: earned - paid };
+}
+
+export function totalOwedToCrew() {
+  return data.workers.reduce((s, w) => s + Math.max(0, workerEarnings(w.id).owed), 0);
 }
 
 // Every owner contribution: ones entered by hand plus ones implied by
@@ -235,6 +275,9 @@ export function summarize(range) {
   const miles = trips.reduce((s, m) => s + (Number(m.miles) || 0), 0);
   const mileageDeduction = miles * (Number(data.settings.mileageRate) || 0);
   const contributed = contributions.reduce((s, c) => s + (Number(c.amount) || 0), 0);
+  const payouts = data.payouts.filter(p => inRange(p.date, range));
+  const laborPaid = payouts.reduce((s, p) => s + (Number(p.amount) || 0), 0);
+  const laborEarned = jobs.reduce((s, j) => s + jobCommission(j), 0);
 
   const byService = {};
   for (const j of jobs) {
@@ -261,8 +304,9 @@ export function summarize(range) {
     jobs, expenses, trips, contributions,
     revenue, tips, income: revenue + tips, unpaid,
     expenseTotal, miles, mileageDeduction, contributed,
-    profit: revenue + tips - expenseTotal,
-    taxableEstimate: revenue + tips - expenseTotal - mileageDeduction,
+    payouts, laborPaid, laborEarned, owedToCrew: totalOwedToCrew(),
+    profit: revenue + tips - expenseTotal - laborPaid,
+    taxableEstimate: revenue + tips - expenseTotal - laborPaid - mileageDeduction,
     byService: Object.values(byService).sort((a, b) => b.revenue - a.revenue),
     byCategory: Object.entries(byCategory).map(([name, total]) => ({ name, total })).sort((a, b) => b.total - a.total),
     byCustomer: Object.entries(byCustomer).map(([name, total]) => ({ name, total })).sort((a, b) => b.total - a.total),
@@ -285,10 +329,11 @@ export function csvFor(kind) {
   switch (kind) {
     case 'jobs':
       return toCSV([
-        ['Date', 'Customer', 'Vehicle', 'Services', 'Amount', 'Tip', 'Total', 'Payment', 'Paid', 'Notes'],
+        ['Date', 'Customer', 'Vehicle', 'Services', 'Amount', 'Tip', 'Total', 'Payment', 'Paid', 'Crew', 'Crew commission', 'Notes'],
         ...[...d.jobs].sort(byDateDesc).map(j => [
           j.date, customerName(j.customerId), vehicleLabel(j.customerId, j.vehicleId),
-          (j.services || []).join('; '), j.amount, j.tip, jobTotal(j), j.paymentMethod, j.paid ? 'Yes' : 'No', j.notes,
+          (j.services || []).join('; '), j.amount, j.tip, jobTotal(j), j.paymentMethod, j.paid ? 'Yes' : 'No',
+          (j.crew || []).map(m => `${workerName(m.workerId)} ${m.pct}%`).join('; '), jobCommission(j), j.notes,
         ]),
       ]);
     case 'expenses':
@@ -323,6 +368,24 @@ export function csvFor(kind) {
           ];
         }),
       ]);
+    case 'payouts':
+      return toCSV([
+        ['Date', 'Worker', 'Amount', 'Method', 'Notes'],
+        ...[...d.payouts].sort(byDateDesc).map(p => [p.date, workerName(p.workerId), p.amount, p.method, p.notes]),
+      ]);
+    case 'workers': {
+      const year = new Date().getFullYear();
+      const yr = { start: `${year}-01-01`, end: `${year}-12-31` };
+      const threshold = Number(d.settings.reportThreshold1099) || 0;
+      return toCSV([
+        ['Name', 'Phone', 'Email', 'Default commission %', 'W-9 on file', 'Active', `Earned ${year}`, `Paid ${year}`, `1099-NEC needed ${year}`, 'Owed now', 'Notes'],
+        ...d.workers.map(w => {
+          const y = workerEarnings(w.id, yr);
+          return [w.name, w.phone, w.email, w.commissionPct, w.w9OnFile ? 'Yes' : 'No', w.active === false ? 'No' : 'Yes',
+            y.earned, y.paid, y.paid >= threshold ? 'Yes' : 'No', workerEarnings(w.id).owed, w.notes];
+        }),
+      ]);
+    }
     default:
       throw new Error('Unknown export ' + kind);
   }

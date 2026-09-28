@@ -12,21 +12,24 @@ const ui = {
   customerSearch: '',
   jobSearch: '',
   expenseTab: 'expenses',
+  crewYear: new Date().getFullYear(),
 };
 
 // ---------------------------------------------------------------- routing
 
-const TABS = ['home', 'customers', 'jobs', 'expenses', 'journal'];
+const TABS = ['home', 'customers', 'jobs', 'crew', 'expenses', 'journal'];
 
 function route() {
   const [name, id] = (location.hash.replace(/^#\/?/, '') || 'home').split('/');
-  const tab = name === 'customer' ? 'customers' : name === 'settings' ? 'home' : name;
+  const tab = { customer: 'customers', worker: 'crew', settings: 'home' }[name] || name;
   document.querySelectorAll('.tabbar a').forEach(a => a.classList.toggle('active', a.dataset.tab === tab));
   const renderers = {
     home: renderHome,
     customers: renderCustomers,
     customer: () => renderCustomer(id),
     jobs: renderJobs,
+    crew: renderCrew,
+    worker: () => renderWorker(id),
     expenses: renderExpenses,
     journal: renderJournal,
     settings: renderSettings,
@@ -130,7 +133,7 @@ sheetRoot.addEventListener('submit', e => {
   const bad = [...form.querySelectorAll('[required]')].find(el => !el.value.trim());
   if (bad) { bad.focus(); bad.classList.add('invalid'); return; }
   const values = Object.fromEntries(new FormData(form).entries());
-  form.querySelectorAll('input[type=checkbox][name]').forEach(cb => { if (!cb.closest('.chips')) values[cb.name] = cb.checked; });
+  form.querySelectorAll('input[type=checkbox][name]').forEach(cb => { if (!cb.closest('.chips, .crew-list')) values[cb.name] = cb.checked; });
   if (sheetHandlers && sheetHandlers.onSave(values, form) !== false) closeSheet();
 });
 
@@ -173,7 +176,7 @@ function renderHome() {
     <section class="hero card">
       <span class="label">Net profit</span>
       <span class="hero-num ${r.profit < 0 ? 'neg' : ''}">${money(r.profit)}</span>
-      <span class="sub">${money(r.income)} income − ${money(r.expenseTotal)} expenses</span>
+      <span class="sub">${money(r.income)} income − ${money(r.expenseTotal)} expenses${r.laborPaid ? ` − ${money(r.laborPaid)} crew pay` : ''}</span>
     </section>
 
     <section class="tiles">
@@ -183,6 +186,8 @@ function renderHome() {
       ${tile('Owner contributions', money(r.contributed), `${r.contributions.length} entr${r.contributions.length === 1 ? 'y' : 'ies'}`)}
       ${tile('Avg per job', money(r.jobs.length ? r.revenue / r.jobs.length : 0), 'before tips')}
       ${tile('Unpaid', money(r.unpaid), r.unpaid ? 'still owed to you' : 'all caught up', r.unpaid ? 'warn' : '')}
+      ${d.workers.length ? tile('Crew pay', money(r.laborPaid), `${money(r.laborEarned)} commission earned`) : ''}
+      ${d.workers.length ? tile('Owed to crew', money(r.owedToCrew), r.owedToCrew > 0.004 ? 'all time, not paid yet' : 'all paid up', r.owedToCrew > 0.004 ? 'warn' : '') : ''}
     </section>
 
     <section class="card">
@@ -210,6 +215,7 @@ function renderHome() {
       <dl>
         <dt>Income (incl. tips)</dt><dd>${money(r.income)}</dd>
         <dt>Expenses</dt><dd>− ${money(r.expenseTotal)}</dd>
+        ${r.laborPaid ? `<dt>Contract labor (crew)</dt><dd>− ${money(r.laborPaid)}</dd>` : ''}
         <dt>Mileage (${num(r.miles)} mi × ${money(d.settings.mileageRate)})</dt><dd>− ${money(r.mileageDeduction)}</dd>
         <dt class="total">Estimated net</dt><dd class="total">${money(r.taxableEstimate)}</dd>
       </dl>
@@ -270,7 +276,7 @@ function monthlyChart() {
 function renderCustomers() {
   const d = S.get();
   view.innerHTML = `
-    ${header('Customers', addButton('new-customer', 'New customer'))}
+    ${header('Clients', addButton('new-customer', 'New client'))}
     <input class="search" type="search" placeholder="Search name, phone, car, plate…" value="${esc(ui.customerSearch)}" data-search="customer">
     ${!d.customers.length ? empty('No customers yet.', 'new-customer', 'Add your first customer') : ''}
     <div id="results">${customerResults()}</div>`;
@@ -315,7 +321,7 @@ function renderCustomer(id) {
   const phone = (c.phone || '').replace(/[^\d+]/g, '');
 
   view.innerHTML = `
-    <header class="topbar"><a class="back" href="#/customers">‹ Customers</a>
+    <header class="topbar"><a class="back" href="#/customers">‹ Clients</a>
       <div class="topbar-actions"><button class="link" data-action="edit-customer" data-id="${c.id}">Edit</button></div></header>
     <section class="profile">
       <h1>${esc(c.name)}</h1>
@@ -420,10 +426,12 @@ function vehicleForm(customerId, vehicleId) {
 function jobRow(j) {
   const who = S.customerName(j.customerId) || 'No customer';
   const car = S.vehicleLabel(j.customerId, j.vehicleId);
+  const crew = (j.crew || []).map(m => S.workerName(m.workerId)).filter(Boolean);
   return `<li><button class="row" data-action="edit-job" data-id="${j.id}">
     <div class="row-main">
       <b>${esc(who)}${car ? ` <small>· ${esc(car)}</small>` : ''}</b>
       <small>${esc(shortDate(j.date))} · ${esc((j.services || []).join(', ') || 'No services listed')}</small>
+      ${crew.length ? `<small>Crew: ${esc(crew.join(', '))} · ${money(S.jobCommission(j))}</small>` : ''}
     </div>
     <div class="row-end">
       <b>${money(S.jobTotal(j))}</b>
@@ -458,7 +466,9 @@ function jobResults() {
 function jobForm(j = {}, presetCustomer = '') {
   const d = S.get();
   const isNew = !j.id;
-  const job = { date: isoDate(), services: [], paid: true, paymentMethod: 'Cash', customerId: presetCustomer, ...j };
+  const job = { date: isoDate(), services: [], crew: [], paid: true, paymentMethod: 'Cash', customerId: presetCustomer, ...j };
+  const onJob = Object.fromEntries((job.crew || []).map(m => [m.workerId, m.pct]));
+  const crewChoices = [...d.workers].filter(w => w.active !== false || w.id in onJob).sort((a, b) => a.name.localeCompare(b.name));
   const customers = [...d.customers].sort((a, b) => a.name.localeCompare(b.name)).map(c => ({ value: c.id, label: c.name }));
   const serviceNames = new Set(d.settings.services.map(s => s.name));
   const extra = (job.services || []).filter(s => !serviceNames.has(s)).map(name => ({ name, price: 0 }));
@@ -470,7 +480,7 @@ function jobForm(j = {}, presetCustomer = '') {
     body: `
       ${field('Date', `<input name="date" type="date" required value="${esc(job.date)}">`)}
       ${field('Customer', `<select name="customerId">${options(customers, job.customerId, { blank: customers.length ? 'Choose customer…' : 'No customers yet' })}</select>`,
-        `<a href="#/customers" data-sheet="cancel">Add customers on the Customers tab</a>`)}
+        customers.length ? '' : `<a href="#/customers" data-sheet="cancel">Add customers on the Clients tab first</a>`)}
       ${field('Vehicle', `<select name="vehicleId"></select>`)}
       <fieldset class="group"><legend>Services</legend>
         <div class="chips">
@@ -482,15 +492,27 @@ function jobForm(j = {}, presetCustomer = '') {
         ${field('Price', `<input name="amount" type="number" inputmode="decimal" step="0.01" min="0" value="${esc(job.amount)}" placeholder="0.00">`)}
         ${field('Tip', `<input name="tip" type="number" inputmode="decimal" step="0.01" min="0" value="${esc(job.tip)}" placeholder="0.00">`)}
       </div>
-      ${toggle('paid', job.paid, 'Paid')}
+      ${crewChoices.length ? `<fieldset class="group"><legend>Crew on this job</legend>
+        <div class="crew-list">
+          ${crewChoices.map(w => `<div class="crew-row">
+            <label class="chip"><input type="checkbox" name="crewMember" value="${w.id}" ${w.id in onJob ? 'checked' : ''}><span>${esc(w.name)}</span></label>
+            <input class="pct" type="number" inputmode="decimal" step="0.5" min="0" max="100" name="pct-${w.id}" value="${esc(onJob[w.id] ?? w.commissionPct)}" aria-label="${esc(w.name)} commission percent"><span class="pct-sign">%</span>
+            <b class="crew-pay" data-crew-pay="${w.id}"></b>
+          </div>`).join('')}
+        </div>
+        <small class="muted">Commission is on the price, not tips.</small>
+      </fieldset>` : ''}
+      ${toggle('paid', job.paid, 'Customer paid')}
       ${field('Payment method', `<select name="paymentMethod">${options(S.PAYMENT_METHODS, job.paymentMethod)}</select>`)}
       ${field('Notes', `<textarea name="notes" rows="3">${esc(job.notes)}</textarea>`)}
     `,
     onSave: (v, f) => {
       const services = [...f.querySelectorAll('input[name=svc]:checked')].map(i => i.value);
       if (v.otherService.trim()) services.push(v.otherService.trim());
+      const crew = [...f.querySelectorAll('input[name=crewMember]:checked')]
+        .map(i => ({ workerId: i.value, pct: parseFloat(v['pct-' + i.value]) || 0 }));
       S.upsert('jobs', {
-        ...j, date: v.date, customerId: v.customerId, vehicleId: v.vehicleId, services,
+        ...j, date: v.date, customerId: v.customerId, vehicleId: v.vehicleId, services, crew,
         amount: parseFloat(v.amount) || 0, tip: parseFloat(v.tip) || 0,
         paid: v.paid, paymentMethod: v.paymentMethod, notes: v.notes.trim(),
       });
@@ -515,7 +537,187 @@ function jobForm(j = {}, presetCustomer = '') {
     if (amountTouched) return;
     const sum = [...form.querySelectorAll('input[name=svc]:checked')].reduce((s, i) => s + Number(i.dataset.price), 0);
     form.elements.amount.value = sum ? sum.toFixed(2) : '';
+    showCrewPay();
   });
+
+  // Live commission for each checked crew member.
+  const showCrewPay = () => {
+    const price = parseFloat(form.elements.amount.value) || 0;
+    form.querySelectorAll('[data-crew-pay]').forEach(el => {
+      const id = el.dataset.crewPay;
+      const on = form.querySelector(`input[name=crewMember][value="${id}"]`).checked;
+      const pct = parseFloat(form.elements['pct-' + id].value) || 0;
+      el.textContent = on ? money(S.crewPay({ amount: price }, { pct })) : '';
+    });
+  };
+  form.addEventListener('input', showCrewPay);
+  form.addEventListener('change', showCrewPay);
+  showCrewPay();
+}
+
+// ---------------------------------------------------------------- CREW (1099 commission payroll)
+
+function renderCrew() {
+  const d = S.get();
+  const year = ui.crewYear;
+  const yr = { start: `${year}-01-01`, end: `${year}-12-31` };
+  const threshold = Number(d.settings.reportThreshold1099) || 0;
+  const workers = [...d.workers].sort((a, b) => (a.active === false) - (b.active === false) || a.name.localeCompare(b.name));
+  const rows = workers.map(w => ({ w, all: S.workerEarnings(w.id), yr: S.workerEarnings(w.id, yr) }));
+  const owed = rows.reduce((s, r) => s + Math.max(0, r.all.owed), 0);
+  const recent = [...d.payouts].sort(S.byDateDesc).slice(0, 10);
+
+  view.innerHTML = `
+    ${header('Crew', addButton('new-worker', 'New worker'))}
+    ${!d.workers.length ? empty('No crew members yet. Add the people you pay a commission to.', 'new-worker', 'Add a crew member') : `
+    <section class="hero card">
+      <span class="label">Owed to crew</span>
+      <span class="hero-num">${money(owed)}</span>
+      <span class="sub">Commission earned on jobs minus payments recorded</span>
+    </section>
+    <button class="btn primary block" data-action="new-payout">＋ Record a payment</button>
+
+    <div class="section-head"><h2>Crew members</h2></div>
+    <ul class="list">${rows.map(({ w, all, yr: y }) => `
+      <li><a class="row" href="#/worker/${w.id}">
+        <div class="row-main">
+          <b>${esc(w.name)}${w.active === false ? ' <small>· inactive</small>' : ''}</b>
+          <small>${num(w.commissionPct, 2)}% · ${money(y.earned)} in ${year}${w.w9OnFile ? '' : ' · <span class="tag warn">No W-9</span>'}</small>
+        </div>
+        <div class="row-end">
+          <b>${money(Math.max(0, all.owed))}</b>
+          <small>${all.owed > 0.004 ? 'owed' : 'paid up'}</small>
+        </div>
+      </a></li>`).join('')}</ul>
+
+    <section class="card">
+      <h3>1099-NEC summary
+        <span class="year-nav">
+          <button class="btn-icon sm" data-action="crew-year" data-step="-1" aria-label="Previous year">‹</button>
+          <b>${year}</b>
+          <button class="btn-icon sm" data-action="crew-year" data-step="1" aria-label="Next year" ${year >= new Date().getFullYear() ? 'disabled' : ''}>›</button>
+        </span>
+      </h3>
+      <table class="mini-table">
+        <tr><th>Crew member</th><th>Paid in ${year}</th><th></th></tr>
+        ${rows.map(({ w, yr: y }) => `<tr><td>${esc(w.name)}</td><td>${money(y.paid)}</td>
+          <td>${y.paid >= threshold && threshold > 0 ? '<span class="badge warn">1099 needed</span>' : ''}</td></tr>`).join('')}
+      </table>
+      <p class="fine">Flags anyone you paid ${money(threshold, false)} or more in the year. The threshold is set in Settings. Confirm the current rules with your tax preparer.</p>
+    </section>
+
+    ${recent.length ? `<div class="section-head"><h2>Recent payments</h2></div>
+    <ul class="list">${recent.map(payoutRow).join('')}</ul>` : ''}
+    `}`;
+}
+
+function payoutRow(p) {
+  return `<li><button class="row" data-action="edit-payout" data-id="${p.id}">
+    <div class="row-main"><b>${esc(S.workerName(p.workerId) || 'Unknown')}</b>
+      <small>${esc(shortDate(p.date))}${p.method ? ' · ' + esc(p.method) : ''}${p.notes ? ' · ' + esc(p.notes) : ''}</small></div>
+    <div class="row-end"><b>${money(p.amount)}</b></div>
+  </button></li>`;
+}
+
+function renderWorker(id) {
+  const w = S.find('workers', id);
+  if (!w) { location.hash = '#/crew'; return; }
+  const e = S.workerEarnings(id);
+  const phone = (w.phone || '').replace(/[^\d+]/g, '');
+  view.innerHTML = `
+    <header class="topbar"><a class="back" href="#/crew">‹ Crew</a>
+      <div class="topbar-actions"><button class="link" data-action="edit-worker" data-id="${w.id}">Edit</button></div></header>
+    <section class="profile">
+      <h1>${esc(w.name)}</h1>
+      <div class="contact-actions">
+        ${phone ? `<a class="btn" href="tel:${esc(phone)}">Call</a><a class="btn" href="sms:${esc(phone)}">Text</a>` : ''}
+        ${w.email ? `<a class="btn" href="mailto:${esc(w.email)}">Email</a>` : ''}
+      </div>
+    </section>
+    <section class="tiles">
+      ${tile('Earned', money(e.earned), `${e.jobs.length} job${e.jobs.length === 1 ? '' : 's'}`)}
+      ${tile('Paid', money(e.paid), `${e.payouts.length} payment${e.payouts.length === 1 ? '' : 's'}`)}
+      ${tile('Owed', money(Math.max(0, e.owed)), e.owed > 0.004 ? 'not paid yet' : 'paid up', e.owed > 0.004 ? 'warn' : '')}
+      ${tile('Commission', num(w.commissionPct, 2) + '%', 'default rate')}
+    </section>
+    ${e.owed > 0.004 ? `<button class="btn primary block" data-action="new-payout" data-worker="${w.id}" data-amount="${e.owed.toFixed(2)}">Pay ${money(e.owed)}</button>` : ''}
+    <section class="card info" style="margin-top:12px">
+      <div><span>1099 contractor</span><b>${w.w9OnFile ? 'W-9 on file' : 'No W-9 yet'}</b></div>
+      ${w.phone ? `<div><span>Phone</span><b>${esc(w.phone)}</b></div>` : ''}
+      ${w.email ? `<div><span>Email</span><b>${esc(w.email)}</b></div>` : ''}
+      ${w.notes ? `<div class="notes"><span>Notes</span><p>${esc(w.notes)}</p></div>` : ''}
+    </section>
+
+    <div class="section-head"><h2>Payments</h2><button class="link" data-action="new-payout" data-worker="${w.id}">＋ Add</button></div>
+    ${e.payouts.length ? `<ul class="list">${e.payouts.map(payoutRow).join('')}</ul>` : `<p class="muted">No payments yet.</p>`}
+
+    <div class="section-head"><h2>Jobs worked</h2></div>
+    ${e.jobs.length ? `<ul class="list">${e.jobs.map(({ job, pay }) => `
+      <li><button class="row" data-action="edit-job" data-id="${job.id}">
+        <div class="row-main"><b>${esc(S.customerName(job.customerId) || 'No customer')}</b>
+          <small>${esc(shortDate(job.date))} · ${money(job.amount)} × ${num(job.crew.find(m => m.workerId === w.id).pct, 2)}%</small></div>
+        <div class="row-end"><b>${money(pay)}</b></div>
+      </button></li>`).join('')}</ul>` : `<p class="muted">Not on any jobs yet. Add crew when you log a job.</p>`}
+  `;
+}
+
+function workerForm(w = {}) {
+  const isNew = !w.id;
+  const hasHistory = !isNew && S.workerHasHistory(w.id);
+  openSheet({
+    title: isNew ? 'New crew member' : 'Edit crew member',
+    body: `
+      ${field('Name', `<input name="name" required value="${esc(w.name)}" autocomplete="off">`)}
+      ${field('Default commission %', `<input name="commissionPct" type="number" inputmode="decimal" step="0.5" min="0" max="100" required value="${esc(w.commissionPct ?? 20)}">`,
+        'Percent of the job price (before tips). You can change it per job.')}
+      ${field('Phone', `<input name="phone" type="tel" value="${esc(w.phone)}">`)}
+      ${field('Email', `<input name="email" type="email" value="${esc(w.email)}">`)}
+      ${toggle('w9OnFile', w.w9OnFile, 'W-9 on file', 'You need their W-9 to file a 1099-NEC.')}
+      ${toggle('active', w.active !== false, 'Active', 'Inactive crew are hidden when you log new jobs.')}
+      ${field('Notes', `<textarea name="notes" rows="3">${esc(w.notes)}</textarea>`)}
+      ${hasHistory ? `<p class="fine">This person has jobs or payments on record, so they can't be deleted. Turn off Active instead.</p>` : ''}
+    `,
+    onSave: v => {
+      const saved = S.upsert('workers', {
+        ...w, name: v.name.trim(), commissionPct: parseFloat(v.commissionPct) || 0, phone: v.phone.trim(),
+        email: v.email.trim(), w9OnFile: v.w9OnFile, active: v.active, notes: v.notes.trim(),
+      });
+      if (isNew) location.hash = '#/worker/' + saved.id;
+    },
+    onDelete: isNew || hasHistory ? null : () => { S.remove('workers', w.id); location.hash = '#/crew'; },
+    deleteLabel: 'Delete crew member',
+  });
+}
+
+function payoutForm(p = {}, preset = {}) {
+  const d = S.get();
+  const isNew = !p.id;
+  const pay = { date: isoDate(), method: 'Cash', workerId: preset.worker || '', amount: preset.amount || '', ...p };
+  const workers = [...d.workers].filter(w => w.active !== false || w.id === pay.workerId)
+    .sort((a, b) => a.name.localeCompare(b.name)).map(w => ({ value: w.id, label: w.name }));
+  const form = openSheet({
+    title: isNew ? 'Crew payment' : 'Edit payment',
+    body: `
+      ${field('Crew member', `<select name="workerId" required>${options(workers, pay.workerId, { blank: 'Choose…' })}</select>`, '<span data-owed></span>')}
+      ${field('Date', `<input name="date" type="date" required value="${esc(pay.date)}">`)}
+      ${field('Amount', `<input name="amount" type="number" inputmode="decimal" step="0.01" min="0" required value="${esc(pay.amount)}" placeholder="0.00">`)}
+      ${field('Paid by', `<select name="method">${options(S.PAYMENT_METHODS, pay.method)}</select>`)}
+      ${field('Notes', `<input name="notes" value="${esc(pay.notes)}" placeholder="Week of…, check #…">`)}
+    `,
+    onSave: v => S.upsert('payouts', {
+      ...p, workerId: v.workerId, date: v.date, amount: parseFloat(v.amount) || 0, method: v.method, notes: v.notes.trim(),
+    }),
+    onDelete: isNew ? null : () => S.remove('payouts', p.id),
+    deleteLabel: 'Delete payment',
+  });
+  const showOwed = () => {
+    const id = form.elements.workerId.value;
+    const owed = id ? S.workerEarnings(id).owed + (isNew ? 0 : Number(p.amount) || 0) : 0;
+    form.querySelector('[data-owed]').textContent = id ? `Currently owed: ${money(Math.max(0, owed))}` : '';
+    if (isNew && id && !preset.amount && !form.elements.amount.value && owed > 0) form.elements.amount.value = owed.toFixed(2);
+  };
+  form.elements.workerId.addEventListener('change', () => { form.elements.amount.value = ''; preset.amount = ''; showOwed(); });
+  showOwed();
 }
 
 // ---------------------------------------------------------------- EXPENSES & MILEAGE
@@ -706,6 +908,8 @@ function renderSettings() {
       ${field('Business name', `<input name="businessName" value="${esc(s.businessName)}">`)}
       ${field('Mileage rate ($ per mile)', `<input name="mileageRate" type="number" inputmode="decimal" step="0.005" min="0" value="${esc(s.mileageRate)}">`,
         'Use the current IRS standard mileage rate for business.')}
+      ${field('1099-NEC threshold ($)', `<input name="reportThreshold1099" type="number" inputmode="decimal" step="1" min="0" value="${esc(s.reportThreshold1099)}">`,
+        'Crew paid this much or more in a year are flagged for a 1099-NEC.')}
       ${field('Services & prices', `<textarea name="services" rows="8">${esc(s.services.map(x => `${x.name}, ${x.price}`).join('\n'))}</textarea>`,
         'One per line: <i>Service name, price</i>')}
       ${field('Expense categories', `<textarea name="expenseCategories" rows="8">${esc(s.expenseCategories.join('\n'))}</textarea>`, 'One per line')}
@@ -726,6 +930,8 @@ function renderSettings() {
       <button class="btn block" data-action="csv" data-kind="mileage">Mileage log (${d.mileage.length})</button>
       <button class="btn block" data-action="csv" data-kind="contributions">Owner journal (${S.allContributions().length})</button>
       <button class="btn block" data-action="csv" data-kind="customers">Customers (${d.customers.length})</button>
+      <button class="btn block" data-action="csv" data-kind="payouts">Crew payments (${d.payouts.length})</button>
+      <button class="btn block" data-action="csv" data-kind="workers">Crew &amp; 1099 totals (${d.workers.length})</button>
     </section>
 
     <div class="section-head"><h2>Danger zone</h2></div>
@@ -748,6 +954,7 @@ view.addEventListener('submit', e => {
   S.updateSettings({
     businessName: v.businessName.trim(),
     mileageRate: parseFloat(v.mileageRate) || 0,
+    reportThreshold1099: parseFloat(v.reportThreshold1099) || 0,
     services,
     expenseCategories: expenseCategories.length ? expenseCategories : [...S.DEFAULT_EXPENSE_CATEGORIES],
   });
@@ -778,6 +985,11 @@ const actions = {
   'edit-trip': el => tripForm(S.find('mileage', el.dataset.id)),
   'new-contribution': () => contributionForm(),
   'edit-contribution': el => contributionForm(S.find('contributions', el.dataset.id)),
+  'new-worker': () => workerForm(),
+  'edit-worker': el => workerForm(S.find('workers', el.dataset.id)),
+  'new-payout': el => payoutForm({}, { worker: el.dataset.worker, amount: el.dataset.amount }),
+  'edit-payout': el => payoutForm(S.find('payouts', el.dataset.id)),
+  'crew-year': el => { ui.crewYear += Number(el.dataset.step); renderCrew(); },
   'expense-tab': el => { ui.expenseTab = el.dataset.tab; renderExpenses(); },
   'period': el => { ui.period = el.dataset.period; ui.offset = 0; renderHome(); },
   'period-prev': () => { ui.offset -= 1; renderHome(); },
@@ -793,7 +1005,7 @@ const actions = {
   'export-json': () => download(`detailing-backup-${isoDate()}.json`, S.exportJSON(), 'application/json'),
   'csv': el => download(`${el.dataset.kind}-${isoDate()}.csv`, S.csvFor(el.dataset.kind), 'text/csv'),
   'reset': () => {
-    if (confirm('Erase ALL customers, jobs, expenses, mileage and journal entries from this phone?') &&
+    if (confirm('Erase ALL customers, jobs, crew, payments, expenses, mileage and journal entries from this phone?') &&
         confirm('Really erase everything? Export a backup first if you might need it.')) {
       S.resetAll();
       toast('All data erased');
@@ -830,7 +1042,7 @@ view.addEventListener('input', e => {
 
 // ---------------------------------------------------------------- boot
 
-if (!TABS.includes((location.hash.replace(/^#\/?/, '') || 'home').split('/')[0]) && !/^#\/(customer|settings)/.test(location.hash)) {
+if (!TABS.includes((location.hash.replace(/^#\/?/, '') || 'home').split('/')[0]) && !/^#\/(customer|worker|settings)/.test(location.hash)) {
   location.hash = '#/home';
 }
 route();
