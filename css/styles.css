@@ -442,3 +442,4 @@ html.in-claude #view { padding-top: 8px; }
   .review-photo { max-height: calc(100vh - 140px); }
   .review-actions { grid-template-columns: 1fr 1fr 1fr; }
 }
+.dialog input { margin-bottom: 16px; }

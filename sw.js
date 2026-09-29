@@ -1,6 +1,6 @@
 // Offline support: the app shell is cached so it opens with no signal.
 // Bump VERSION whenever app files change so phones pick up the update.
-const VERSION = 'v5';
+const VERSION = 'v6';
 const CACHE = 'detailing-' + VERSION;
 const SHELL = [
   './',

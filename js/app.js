@@ -93,6 +93,56 @@ function statusLine() {
 // ---------------------------------------------------------------- confirm dialog
 // claude.ai pages can't show confirm()/alert(), so confirmations are in-page.
 
+function askText(message, { ok = 'Add', placeholder = '' } = {}) {
+  return new Promise(resolve => {
+    const wrap = document.createElement('div');
+    wrap.className = 'dialog-backdrop';
+    wrap.innerHTML = `<form class="dialog" role="dialog" aria-modal="true" aria-labelledby="dialog-msg">
+      <p id="dialog-msg">${esc(message)}</p>
+      <input id="dialog-input" name="value" autocomplete="off" placeholder="${esc(placeholder)}">
+      <div class="dialog-actions">
+        <button type="button" class="btn" data-answer="no">Cancel</button>
+        <button type="submit" class="btn primary">${esc(ok)}</button>
+      </div></form>`;
+    const input = wrap.querySelector('input');
+    const done = answer => { wrap.remove(); document.removeEventListener('keydown', onKey); resolve(answer); };
+    const onKey = e => { if (e.key === 'Escape') done(''); };
+    wrap.querySelector('form').addEventListener('submit', e => { e.preventDefault(); done(input.value.trim()); });
+    wrap.addEventListener('click', e => { if (e.target.closest('[data-answer="no"]') || e.target === wrap) done(''); });
+    document.addEventListener('keydown', onKey);
+    document.body.appendChild(wrap);
+    input.focus();
+  });
+}
+
+// Adds a "＋ New…" choice to a select. Picking it asks for a name, saves it to
+// the settings list (expenseCategories or journalAccounts) and selects it.
+const NEW_OPTION = '__new__';
+function newOption(label = '＋ New…') {
+  return `<option value="${NEW_OPTION}">${esc(label)}</option>`;
+}
+function addOptionBeforeNew(select, name) {
+  if (![...select.options].some(o => o.value === name)) {
+    select.querySelector(`option[value="${NEW_OPTION}"]`).insertAdjacentHTML('beforebegin', `<option value="${esc(name)}">${esc(name)}</option>`);
+  }
+}
+
+function allowNew(select, listKey, question, onAdded) {
+  let previous = select.value;
+  select.addEventListener('change', async e => {
+    if (select.value !== NEW_OPTION) { previous = select.value; return; }
+    e.stopImmediatePropagation();
+    const name = await askText(question, { placeholder: 'e.g. Truck Build Expense' });
+    if (!name) { select.value = previous; return; }
+    S.addToList(listKey, name);
+    addOptionBeforeNew(select, name);
+    if (onAdded) onAdded(name);
+    select.value = name;
+    previous = name;
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+}
+
 function askConfirm(message, { ok = 'OK', danger = false, cancel = 'Cancel' } = {}) {
   return new Promise(resolve => {
     const wrap = document.createElement('div');
@@ -1052,19 +1102,20 @@ function expenseForm(e = {}, opts = {}) {
   // The Journal account follows the category until the user picks one.
   let accountPicked = !!exp.journalAccount;
   const journalAccount = exp.journalAccount || S.accountForExpenseCategory(exp.category);
-  const accounts = S.CONTRIBUTION_ACCOUNTS.includes(journalAccount) ? S.CONTRIBUTION_ACCOUNTS : [...S.CONTRIBUTION_ACCOUNTS, journalAccount];
+  const jAccounts = S.journalAccounts();
+  const accounts = jAccounts.includes(journalAccount) ? jAccounts : [...jAccounts, journalAccount];
   openSheet({
     title: isNew ? 'New expense' : 'Edit expense',
     body: `
       ${field('Date', `<input name="date" type="date" required value="${esc(exp.date)}">`)}
       ${field('Amount', `<input name="amount" type="number" inputmode="decimal" step="0.01" min="0" required value="${esc(exp.amount)}" placeholder="0.00">`)}
       ${field('Vendor', `<input name="vendor" value="${esc(exp.vendor)}" placeholder="Chemical Guys, AutoZone, Shell…">`)}
-      ${field('Category', `<select name="category">${options(cats, exp.category)}</select>`)}
+      ${field('Category', `<select name="category">${options(cats, exp.category)}${newOption('＋ New category…')}</select>`)}
       ${field('Payment method', `<select name="paymentMethod">${options(['Card', 'Cash', 'Business account', 'Personal card', 'Personal cash', 'Other'], exp.paymentMethod)}</select>`)}
       ${toggle('paidPersonally', exp.paidPersonally, 'Paid with personal money',
         'Also records this as an owner contribution in the Journal.')}
       <div data-journal-account ${exp.paidPersonally ? '' : 'hidden'}>
-        ${field('Journal account (debit)', `<select name="journalAccount">${options(accounts, journalAccount)}</select>`,
+        ${field('Journal account (debit)', `<select name="journalAccount">${options(accounts, journalAccount)}${newOption('＋ New account…')}</select>`,
           `Where this shows in the Journal: Dr this account, Cr ${esc(S.EQUITY_ACCOUNT)}.`)}
       </div>
       ${field('Notes', `<textarea name="notes" rows="3">${esc(exp.notes)}</textarea>`)}
@@ -1080,6 +1131,12 @@ function expenseForm(e = {}, opts = {}) {
     onDelete: isNew ? null : () => S.remove('expenses', e.id),
     deleteLabel: 'Delete expense',
     onMount: f => {
+      // A new category also becomes a Journal account of the same name.
+      allowNew(f.elements.category, 'expenseCategories', 'Name the new expense category', name => {
+        S.addToList('journalAccounts', name);
+        addOptionBeforeNew(f.elements.journalAccount, name);
+      });
+      allowNew(f.elements.journalAccount, 'journalAccounts', 'Name the new Journal account');
       const wrap = f.querySelector('[data-journal-account]');
       const showAccount = () => { wrap.hidden = !f.elements.paidPersonally.checked; };
       f.elements.paymentMethod.addEventListener('change', () => {
@@ -1173,15 +1230,16 @@ function renderJournal() {
 
 function contributionForm(c = {}, opts = {}) {
   const isNew = !c.id;
-  const entry = { date: isoDate(), debitAccount: S.CONTRIBUTION_ACCOUNTS[0], ...c };
-  const accounts = S.CONTRIBUTION_ACCOUNTS.includes(entry.debitAccount) ? S.CONTRIBUTION_ACCOUNTS : [...S.CONTRIBUTION_ACCOUNTS, entry.debitAccount];
+  const jAccounts = S.journalAccounts();
+  const entry = { date: isoDate(), debitAccount: jAccounts[0], ...c };
+  const accounts = jAccounts.includes(entry.debitAccount) ? jAccounts : [...jAccounts, entry.debitAccount];
   const form = openSheet({
     title: isNew ? 'Owner contribution' : 'Edit entry',
     body: `
       ${field('Date', `<input name="date" type="date" required value="${esc(entry.date)}">`)}
       ${field('Description', `<input name="description" required value="${esc(entry.description)}" placeholder="Bought pressure washer with personal card">`)}
       ${field('Amount', `<input name="amount" type="number" inputmode="decimal" step="0.01" min="0" required value="${esc(entry.amount)}" placeholder="0.00">`)}
-      ${field('What did the money go to? (debit)', `<select name="debitAccount">${options(accounts, entry.debitAccount)}</select>`,
+      ${field('What did the money go to? (debit)', `<select name="debitAccount">${options(accounts, entry.debitAccount)}${newOption('＋ New account…')}</select>`,
         'Pick “Cash – Business Account” if you moved money into the business account.')}
       <div class="entry-preview card">
         <div><span>Debit</span><b data-preview="dr"></b><b data-preview="amt"></b></div>
@@ -1199,7 +1257,9 @@ function contributionForm(c = {}, opts = {}) {
     onDelete: isNew ? null : () => S.remove('contributions', c.id),
     deleteLabel: 'Delete entry',
   });
+  allowNew(form.elements.debitAccount, 'journalAccounts', 'Name the new Journal account');
   const preview = () => {
+    if (form.elements.debitAccount.value === NEW_OPTION) return;
     form.querySelector('[data-preview=dr]').textContent = form.elements.debitAccount.value;
     form.querySelectorAll('[data-preview=amt]').forEach(el => { el.textContent = money(form.elements.amount.value); });
   };
@@ -1225,7 +1285,18 @@ function renderSettings() {
       ${field('Services & prices', `<textarea name="services" rows="8">${esc(s.services.map(x => `${x.name}, ${x.price}`).join('\n'))}</textarea>`,
         'One per line: <i>Service name, price</i>')}
       ${field('Expense categories', `<textarea name="expenseCategories" rows="8">${esc(s.expenseCategories.join('\n'))}</textarea>`, 'One per line')}
+      ${field('Journal accounts', `<textarea name="journalAccounts" rows="8">${esc(S.journalAccounts().join('\n'))}</textarea>`,
+        'One per line. These are the "Dr" accounts for owner contributions.')}
       <button class="btn primary block" type="submit">Save settings</button>
+    </form>
+
+    <div class="section-head"><h2>Change a category</h2></div>
+    <form class="card stack" data-form="recategorize">
+      <p class="fine">Move every expense in one category to another, including entries waiting in Review. Expenses paid with your own money move in the Journal too.</p>
+      ${field('From', `<select name="from">${options(Object.entries(S.categoryCounts()).sort().map(([k, n]) => ({ value: k, label: `${k} (${n})` })))}</select>`)}
+      ${field('To', `<input name="to" list="category-list" required autocomplete="off" placeholder="Pick or type a new one, e.g. Truck Build Expense">
+        <datalist id="category-list">${options(s.expenseCategories)}</datalist>`)}
+      <button class="btn block" type="submit">Move expenses</button>
     </form>
 
     <div class="section-head"><h2>Backup</h2></div>
@@ -1255,6 +1326,19 @@ function renderSettings() {
   `;
 }
 
+view.addEventListener('submit', async e => {
+  if (e.target.dataset.form !== 'recategorize') return;
+  e.preventDefault();
+  const from = e.target.elements.from.value;
+  const to = e.target.elements.to.value.trim();
+  if (!from || !to) return;
+  if (to === from) { toast('Pick a different category to move to.'); return; }
+  const n = S.categoryCounts()[from] || 0;
+  if (!await askConfirm(`Move ${n} ${n === 1 ? 'expense' : 'expenses'} from "${from}" to "${to}"?`, { ok: 'Move' })) return;
+  S.recategorize(from, to);
+  toast(`Moved ${n} to ${to}`);
+});
+
 view.addEventListener('submit', e => {
   if (e.target.dataset.form !== 'settings') return;
   e.preventDefault();
@@ -1264,7 +1348,9 @@ view.addEventListener('submit', e => {
     return m ? { name: m[1].trim(), price: parseFloat(m[2]) || 0 } : { name: l, price: 0 };
   });
   const expenseCategories = v.expenseCategories.split('\n').map(l => l.trim()).filter(Boolean);
+  const journalAccounts = v.journalAccounts.split('\n').map(l => l.trim()).filter(Boolean);
   S.updateSettings({
+    journalAccounts: journalAccounts.length ? journalAccounts : [...S.CONTRIBUTION_ACCOUNTS],
     businessName: v.businessName.trim(),
     mileageRate: parseFloat(v.mileageRate) || 0,
     reportThreshold1099: parseFloat(v.reportThreshold1099) || 0,

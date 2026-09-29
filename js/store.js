@@ -63,7 +63,64 @@ export function accountForExpenseCategory(category) {
     'Phone & Software': 'Phone & Software Expense',
     'Licenses & Fees': 'Licenses & Fees Expense',
   };
-  return map[category] || 'Other Expense';
+  // A Journal account named exactly like the category wins, so custom
+  // categories such as "Truck Build Expense" map to themselves.
+  const own = (data && data.settings.journalAccounts || []).find(a => a === category);
+  return own || map[category] || 'Other Expense';
+}
+
+export function journalAccounts() {
+  return data.settings.journalAccounts && data.settings.journalAccounts.length ? data.settings.journalAccounts : CONTRIBUTION_ACCOUNTS;
+}
+
+// Adds a name to a settings list (expenseCategories or journalAccounts) if missing.
+export function addToList(key, name) {
+  const clean = (name || '').trim();
+  if (!clean) return '';
+  const list = key === 'journalAccounts' ? [...journalAccounts()] : [...data.settings[key]];
+  if (!list.includes(clean)) {
+    data.settings = { ...data.settings, [key]: [...list, clean] };
+    save();
+  }
+  return clean;
+}
+
+export function categoryCounts() {
+  const counts = {};
+  for (const e of data.expenses) counts[e.category || 'Other'] = (counts[e.category || 'Other'] || 0) + 1;
+  for (const r of data.review) if (r.status === 'pending' && r.kind === 'expense') {
+    const c = r.record.category || 'Other';
+    counts[c] = (counts[c] || 0) + 1;
+  }
+  return counts;
+}
+
+// Moves every expense (and every waiting review entry) from one category to
+// another. Personally paid expenses follow along in the Journal unless the
+// owner had picked a different Journal account for them.
+export function recategorize(from, to) {
+  const target = (to || '').trim();
+  if (!target || target === from) return 0;
+  if (!data.settings.expenseCategories.includes(target)) {
+    data.settings = { ...data.settings, expenseCategories: [...data.settings.expenseCategories, target] };
+  }
+  const oldAccount = accountForExpenseCategory(from);
+  // The new category also becomes a Journal account of the same name.
+  if (!journalAccounts().includes(target)) {
+    data.settings = { ...data.settings, journalAccounts: [...journalAccounts(), target] };
+  }
+  const newAccount = accountForExpenseCategory(target);
+  let n = 0;
+  const move = e => {
+    if ((e.category || 'Other') !== from) return;
+    e.category = target;
+    if (e.journalAccount && e.journalAccount === oldAccount) e.journalAccount = newAccount;
+    n++;
+  };
+  data.expenses.forEach(move);
+  data.review.filter(r => r.status === 'pending' && r.kind === 'expense').forEach(r => move(r.record));
+  save();
+  return n;
 }
 
 function emptyData() {
@@ -83,6 +140,7 @@ function emptyData() {
       reportThreshold1099: 2000,
       services: DEFAULT_SERVICES.map(s => ({ ...s })),
       expenseCategories: [...DEFAULT_EXPENSE_CATEGORIES],
+      journalAccounts: [...CONTRIBUTION_ACCOUNTS],
     },
   };
 }
